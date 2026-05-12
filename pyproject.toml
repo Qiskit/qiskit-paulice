@@ -1,0 +1,195 @@
+[build-system]
+requires = ["maturin>=1.0"]
+build-backend = "maturin"
+
+[project]
+name = "qiskit-paulice"
+version = "0.1.0"
+readme = "README.md"
+description = "A library for implementing spacetime coherent Pauli checks"
+license = {file = "LICENSE.txt"}
+classifiers = [
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Natural Language :: English",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+
+requires-python = ">=3.10"
+
+dependencies = [
+    "qiskit>=2.1.2, <3",
+    "numpy>=1.26",
+    "qiskit-aer>=0.17.1",
+]
+
+[tool.maturin]
+bindings = "pyo3"
+python-source = "python"
+features = ["pyo3/extension-module"]
+profile = "release"
+module-name = "qiskit_paulice._internal._internal_r"
+
+[project.optional-dependencies]
+dev = [
+    "qiskit-paulice[test,nbtest,lint,docs]",
+    "tox>=4.4.3",
+]
+basetest = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "qiskit-ibm-runtime>=0.35",
+]
+test = [
+    "qiskit-paulice[basetest]",
+]
+nbtest = [
+    "qiskit-paulice[basetest]",
+    "nbmake>=1.5.0",
+]
+style = [
+    "ruff==0.15.4",
+    "nbqa>=1.8.5",
+]
+lint = [
+    "qiskit-paulice[style]",
+    "mypy==1.19.1",
+    "pylint==4.0.5",
+    "reno>=4.1",
+    "toml>=0.9.6",
+]
+notebook-dependencies = [
+    "qiskit-paulice",
+    "matplotlib",
+    "qiskit-ibm-runtime",
+    "rustworkx[graphviz]>=0.15",
+    "ipywidgets",
+    "pylatexenc",
+]
+docs = [
+    "qiskit-paulice[test,notebook-dependencies]",
+    "qiskit-sphinx-theme~=2.0.0",
+    "matplotlib",
+    "jupyter-sphinx",
+    "sphinx-design",
+    "sphinx-autodoc-typehints",
+    "sphinx-copybutton",
+    "sphinx_reredirects",
+    "nbsphinx>=0.9.4",
+    "reno>=4.1",
+]
+
+[tool.cibuildwheel]
+manylinux-x86_64-image = "manylinux2014"
+manylinux-aarch64-image = "manylinux2014"
+build = "cp310-*"
+skip = "*musllinux* *win32 *i686"
+test-skip = "*win32 *linux_i686"
+test-extras = "test"
+test-command = "pytest {project}/test"
+environment = 'RUSTUP_TOOLCHAIN="stable"'
+
+[tool.cibuildwheel.macos]
+environment = "MACOSX_DEPLOYMENT_TARGET='10.12' RUSTUP_TOOLCHAIN=stable"
+
+[tool.coverage.run]
+branch = true
+parallel = true
+omit = [
+    "*/qiskit_paulice/_internal/*",
+]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+
+[tool.mypy]
+python_version = "3.10"
+show_error_codes = true
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "qiskit_paulice._internal.*"
+follow_imports = "skip"
+
+[tool.pylint]
+py-version = "3.10"
+load-plugins = ["pylint.extensions.no_self_use"]
+
+[tool.pylint."messages control"]
+disable = ["all"]
+enable = [
+    "reimported",
+    "no-else-raise",
+    "redefined-argument-from-local",
+    "redefined-builtin",
+    "raise-missing-from",
+    "cyclic-import",
+    "unused-argument",
+    "attribute-defined-outside-init",
+    "no-else-return",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["./qiskit_paulice/", "./test/"]
+
+[tool.ruff]
+line-length = 100
+src = ["qiskit_paulice", "test"]
+target-version = "py310"
+exclude = ["python/qiskit_paulice/_internal/"]
+
+[tool.ruff.lint]
+select = [
+    "I",   # isort
+    "E",   # pycodestyle
+    "W",   # pycodestyle
+    "D",   # pydocstyle
+    "F",   # pyflakes
+    "RUF", # ruff
+    "UP",  # pyupgrade
+    "SIM", # flake8-simplify
+    "B",   # flake8-bugbear
+    "A",   # flake8-builtins
+]
+ignore = [
+    "E501", # line too long
+]
+
+[tool.ruff.lint.pylint]
+max-args = 6
+
+[tool.ruff.lint.extend-per-file-ignores]
+"test/**.py" = [
+    "D",  # pydocstyle
+]
+"docs/**/*" = [
+    "E402", # module level import not at top of file
+    "D",    # pydocstyle
+]
+
+[tool.ruff.lint.flake8-copyright]
+notice-rgx = """
+# This code is a Qiskit project.
+#
+# \\(C\\) Copyright IBM 2026\\.
+#
+# This code is licensed under the Apache License, Version 2\\.0\\. You may
+# obtain a copy of this license in the LICENSE\\.txt file in the root directory
+# of this source tree or at http\\:\\/\\/www\\.apache\\.org\\/licenses\\/LICENSE\\-2\\.0\\.
+#
+# Any modifications or derivative works of this code must retain this
+# copyright notice, and modified files need to carry a notice indicating
+# that they have been altered from the originals\\.
+"""
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
