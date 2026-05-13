@@ -68,7 +68,7 @@ notebook-dependencies = [
     "qiskit-paulice",
     "matplotlib",
     "qiskit-ibm-runtime",
-    "rustworkx[graphviz]>=0.15",
+    "rustworkx[graphviz]>=0.17.1",
     "ipywidgets",
     "pylatexenc",
 ]
