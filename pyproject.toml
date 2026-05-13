@@ -39,7 +39,7 @@ module-name = "qiskit_paulice._internal._internal_r"
 [project.optional-dependencies]
 dev = [
     "qiskit-paulice[test,nbtest,lint,docs]",
-    "tox>=4.4.3",
+    "tox>=4.54.0",
 ]
 basetest = [
     "pytest>=8.0",
