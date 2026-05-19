@@ -62,7 +62,8 @@ def add_pauli_checks(
             virtual or physical qubits. If the circuit has a layout, the user must provide
             ``ancilla_qubits``.
         target_qubits: Qubit indices of ``circuit`` which will be used to entangle the check
-            qubits to the payload.
+            qubits to the payload. When ``circuit`` has a layout (ISA mode), these are physical
+            qubit indices, in the same index space as ``ancilla_qubits``.
         noise_model: A noise model describing the effect of noise on the target device. This
             model will be used to estimate the effect of a given check during the check picking
             process. While one can generate a noise model from learned Pauli-Lindblad noise, a rougher
@@ -169,6 +170,19 @@ def add_pauli_checks(
             {phys_to_virt[m[0]] for m in measurement_info if m[0] in phys_to_virt}
         )
 
+        # target_qubits are physical indices the payload occupies (same index
+        # space as ancilla_qubits); map them to payload-virtual for the picker.
+        target_phys = [int(q) for q in target_qubits]
+        not_payload = sorted(set(target_phys) - set(payload_phys))
+        if not_payload:
+            raise ValueError(
+                f"target_qubits {not_payload} are not payload qubits of the "
+                f"transpiled circuit. In ISA mode (the circuit has a layout), "
+                f"`target_qubits` must be physical qubit indices the payload "
+                f"occupies -- the same index space as `ancilla_qubits`."
+            )
+        picker_targets = [phys_to_virt[q] for q in target_phys]
+
         # In ISA mode no new qreg is added (we reuse existing physical qubits);
         # only the check_creg_name needs to be collision-free.
         if any(cr.name == check_creg_name for cr in cregs):
@@ -200,21 +214,18 @@ def add_pauli_checks(
 
         measured_qubits = list(set(m[0] for m in measurement_info))
 
-    # Validate target_qubits range against the (possibly shrunken) virtual circuit.
-    n = virtual_circuit.num_qubits
-    out_of_range = sorted({int(q) for q in target_qubits if not 0 <= int(q) < n})
-    if out_of_range:
-        hint = (
-            "If you transpiled with `initial_layout`, pass virtual indices into the "
-            "original payload (e.g. `target_qubits_v`) and supply `ancilla_qubits`."
-            if is_isa
-            else "If these are physical qubit indices, transpile/lay out the circuit onto "
-            "hardware first (or convert them to virtual indices) before calling "
-            "add_pauli_checks."
-        )
-        raise ValueError(
-            f"target_qubits {out_of_range} are out of range for a {n}-qubit circuit. {hint}"
-        )
+        # Non-ISA: target_qubits index the circuit you passed.
+        n = virtual_circuit.num_qubits
+        out_of_range = sorted({int(q) for q in target_qubits if not 0 <= int(q) < n})
+        if out_of_range:
+            raise ValueError(
+                f"target_qubits {out_of_range} are out of range for a {n}-qubit "
+                f"circuit. If these are physical qubit indices, transpile/lay out "
+                f"the circuit onto hardware first (then pass physical targets in "
+                f"ISA mode) before calling add_pauli_checks."
+            )
+        picker_targets = [int(q) for q in target_qubits]
+
     gate_noise = noise_model.gate_noise
     _gate_noise = None
     if gate_noise is not None:
@@ -235,7 +246,7 @@ def add_pauli_checks(
         raise ValueError("The noise model may not be empty.")
     result = _pick_checks(
         virtual_circuit,
-        target_qubits,
+        picker_targets,
         _noise_model,
         measured_qubits=measured_qubits,
         metric=metric,
@@ -274,7 +285,7 @@ def add_pauli_checks(
             anc_list[q - n_payload_v] if q >= n_payload_v else payload_phys[q]
             for q in result.check_qubits
         ]
-        target_qubits_out = [payload_phys[t] for t in target_qubits]
+        target_qubits_out = [payload_phys[t] for t in picker_targets]
     else:
         # Restore original measurements and add check measurements (non-ISA path).
         _restore_measurements_and_cregs(
