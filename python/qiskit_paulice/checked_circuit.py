@@ -143,6 +143,7 @@ class CheckedCircuit:
         returned function accepts either bitstrings or bit arrays.
         """
         n_qubits_full = self.circuit.num_qubits
+        n_clbits_full = self.circuit.num_clbits
         cb_to_q = self._cb_to_q
         sub_array = self._sub_array
 
@@ -151,13 +152,22 @@ class CheckedCircuit:
                 s = bitstring_or_array.replace(" ", "")
                 x = np.zeros(n_qubits_full, dtype=np.byte)
                 if cb_to_q:
+                    if len(s) != n_clbits_full:
+                        raise ValueError(
+                            f"Bitstring has length {len(s)}; expected "
+                            f"{n_clbits_full} (one bit per clbit)."
+                        )
                     for cb, q in cb_to_q.items():
-                        if cb < len(s) and q < n_qubits_full:
-                            x[q] = 1 if s[-(cb + 1)] == "1" else 0
+                        x[q] = 1 if s[-(cb + 1)] == "1" else 0
                 else:
                     # Fallback: bitstring is qubit-indexed (e.g. circuit was
                     # output of `pick_checks` with a user-applied measure_all).
-                    for q in range(min(n_qubits_full, len(s))):
+                    if len(s) != n_qubits_full:
+                        raise ValueError(
+                            f"Bitstring has length {len(s)}; expected "
+                            f"{n_qubits_full} (one bit per qubit)."
+                        )
+                    for q in range(n_qubits_full):
                         x[q] = 1 if s[-(q + 1)] == "1" else 0
             else:
                 x = bitstring_or_array
