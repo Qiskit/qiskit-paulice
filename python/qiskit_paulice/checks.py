@@ -110,8 +110,6 @@ def add_pauli_checks(
 
     if cost.lower() == "gamma":
         metric = _Metric.gamma()
-    elif cost.lower() == "balanced_gamma":
-        metric = _Metric.balanced_gamma()
     elif cost.lower() == "ler":
         metric = _Metric.logical_error_rate(cost_nshots)
     else:
@@ -343,6 +341,12 @@ def _strip_measurements_cregs_barriers(circuit: QuantumCircuit):
                 if clbit in creg:
                     measurement_info.append((qubit_idx, creg.index(clbit), creg.name))
                     break
+            else:
+                raise ValueError(
+                    "add_pauli_checks does not support measurements into loose Clbits "
+                    "(Clbits not in any ClassicalRegister). Add the clbit to a "
+                    "ClassicalRegister before calling."
+                )
 
     cregs = list(circuit.cregs)
     qregs = list(circuit.qregs)

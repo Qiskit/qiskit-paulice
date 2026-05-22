@@ -16,11 +16,15 @@ from __future__ import annotations
 
 import unittest
 
-from qiskit import QuantumCircuit, transpile
+from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister, transpile
 from qiskit.quantum_info import PauliLindbladMap
 from qiskit.transpiler import CouplingMap
 from qiskit_paulice import CheckedCircuit
-from qiskit_paulice.checks import add_pauli_checks
+from qiskit_paulice.checks import (
+    _lift_to_isa_circuit,
+    _remove_inactive_qubits,
+    add_pauli_checks,
+)
 from qiskit_paulice.noise_models import NoiseModel
 
 _DEFAULT_NOISE = NoiseModel(gate_noise=1e-3, readout_noise=1e-2)
@@ -363,3 +367,165 @@ class TestAddPauliChecksAncillaEdgeNoiseInference(unittest.TestCase):
         # Inferred ancilla noise adds uncaught logical errors; the gamma cost must be
         # strictly higher than the zero-ancilla-noise baseline.
         self.assertGreater(r_inferred[-1].cost, r_empty[-1].cost)
+
+
+class TestAddPauliChecksErrorPaths(unittest.TestCase):
+    """Argument-validation error paths for :func:`add_pauli_checks`."""
+
+    def test_invalid_cost_value_raises(self):
+        with self.assertRaisesRegex(ValueError, "Invalid cost value"):
+            add_pauli_checks(_clifford(), [0], _DEFAULT_NOISE, cost="not_a_metric", seed=0)
+
+    def test_isa_without_ancilla_qubits_raises(self):
+        with self.assertRaisesRegex(ValueError, "ancilla_qubits"):
+            add_pauli_checks(_isa_circuit(), [5], _DEFAULT_NOISE, seed=0)
+
+    def test_isa_wrong_length_ancilla_qubits_raises(self):
+        with self.assertRaisesRegex(ValueError, "one entry per target"):
+            add_pauli_checks(_isa_circuit(), [5, 7], _DEFAULT_NOISE, ancilla_qubits=[4], seed=0)
+
+    def test_isa_out_of_range_ancilla_qubits_raises(self):
+        with self.assertRaisesRegex(ValueError, "physical qubit indices"):
+            add_pauli_checks(_isa_circuit(), [5], _DEFAULT_NOISE, ancilla_qubits=[999], seed=0)
+
+    def test_isa_duplicate_ancilla_qubits_raises(self):
+        with self.assertRaisesRegex(ValueError, "duplicates"):
+            add_pauli_checks(_isa_circuit(), [5, 7], _DEFAULT_NOISE, ancilla_qubits=[4, 4], seed=0)
+
+    def test_isa_ancilla_overlap_with_payload_raises(self):
+        # _PAYLOAD_PHYS = [5, 6, 7] — passing one of those as ancilla overlaps the payload.
+        with self.assertRaisesRegex(ValueError, "overlap with payload"):
+            add_pauli_checks(_isa_circuit(), [5], _DEFAULT_NOISE, ancilla_qubits=[6], seed=0)
+
+    def test_isa_check_creg_name_collision_raises(self):
+        # Build an ISA circuit that already has a creg named "checks_c".
+        circuit_isa = _isa_circuit()
+        circuit_isa.add_register(ClassicalRegister(1, "checks_c"))
+        with self.assertRaisesRegex(ValueError, "classical register named"):
+            add_pauli_checks(circuit_isa, [5], _DEFAULT_NOISE, ancilla_qubits=[4], seed=0)
+
+    def test_qreg_creg_name_collision_raises(self):
+        with self.assertRaisesRegex(ValueError, "must differ"):
+            add_pauli_checks(
+                _clifford(),
+                [0],
+                _DEFAULT_NOISE,
+                check_qreg_name="same",
+                check_creg_name="same",
+                seed=0,
+            )
+
+    def test_existing_qreg_name_collision_raises(self):
+        qc = QuantumCircuit(QuantumRegister(3, "checks_q"))
+        qc.measure_all()
+        with self.assertRaisesRegex(ValueError, "quantum register named"):
+            add_pauli_checks(qc, [0], _DEFAULT_NOISE, seed=0)
+
+    def test_existing_creg_name_collision_raises(self):
+        qc = _clifford()
+        qc.add_register(ClassicalRegister(1, "checks_c"))
+        with self.assertRaisesRegex(ValueError, "classical register named"):
+            add_pauli_checks(qc, [0], _DEFAULT_NOISE, seed=0)
+
+    def test_empty_noise_model_raises(self):
+        with self.assertRaisesRegex(ValueError, "may not be empty"):
+            add_pauli_checks(_clifford(), [0], NoiseModel(), seed=0)
+
+    def test_empty_gate_noise_dict_is_ignored(self):
+        # Empty dict trips the early-return guards in _is_layered_gate_noise /
+        # _is_gate_wise_noise; with non-None readout, the call still succeeds.
+        noise = NoiseModel(gate_noise={}, readout_noise=1e-2)
+        result = add_pauli_checks(_clifford(), [0], noise, seed=0)
+        _assert_variant_progression(self, result, expected_targets=[0])
+
+    def test_seed_none_smoke(self):
+        # The ``seed is None`` branch isn't covered by tests that always pass a seed.
+        result = add_pauli_checks(_clifford(), [0], _DEFAULT_NOISE)
+        _assert_variant_progression(self, result, expected_targets=[0])
+
+
+class TestInternalHelpers(unittest.TestCase):
+    """Direct exercises of internal helpers for paths the public API can't reach."""
+
+    def test_remove_inactive_qubits_falls_back_to_anonymous_qreg(self):
+        # qregs=None forces the fallback to a single anonymous "q" register. Also
+        # include a measure (measure-skip branch) and a gate on an out-of-range qubit
+        # (the "all q < n_keep" guard).
+        circ = QuantumCircuit(5, 1)
+        circ.cx(0, 1)
+        circ.cx(0, 4)  # qubit 4 is beyond n_keep=3 -> dropped by the helper guard
+        circ.measure(0, 0)
+
+        out = _remove_inactive_qubits(circ, num_original_qubits=3, num_active_checks=0)
+        self.assertEqual(out.num_qubits, 3)
+        self.assertEqual([qr.name for qr in out.qregs], ["q"])
+        # The measure and the out-of-range cx must both be stripped.
+        op_names = [inst.operation.name for inst in out.data]
+        self.assertEqual(op_names, ["cx"])
+
+    def test_strip_measurements_uses_correct_creg_when_multiple_present(self):
+        # _strip_measurements_cregs_barriers iterates ``circuit.cregs`` to find which
+        # creg owns a measure's clbit. With multiple cregs and a measure into the
+        # second one, the inner loop must skip past the first creg before matching.
+        from qiskit_paulice.checks import _strip_measurements_cregs_barriers
+
+        cr1 = ClassicalRegister(1, "c1")
+        cr2 = ClassicalRegister(1, "c2")
+        qc = QuantumCircuit(2)
+        qc.add_register(cr1)
+        qc.add_register(cr2)
+        qc.h(0)
+        qc.measure(0, cr2[0])
+
+        _, measurement_info, _, _ = _strip_measurements_cregs_barriers(qc)
+        # One measurement recorded, attributed to ``c2`` (not ``c1``).
+        self.assertEqual(measurement_info, [(0, 0, "c2")])
+
+    def test_loose_clbit_measurement_raises(self):
+        # Measurements into a Clbit that isn't part of any ClassicalRegister can't be
+        # round-tripped through the picker (the strip step records measurements as
+        # (qubit, position-in-creg, creg-name) and has nowhere to put a loose clbit).
+        # We raise explicitly rather than silently dropping the measurement.
+        from qiskit.circuit import Clbit
+
+        loose = Clbit()
+        qc = QuantumCircuit(2)
+        qc.add_bits([loose])
+        qc.h(0)
+        qc.measure(0, loose)
+        with self.assertRaisesRegex(ValueError, "loose Clbits"):
+            add_pauli_checks(qc, [0], _DEFAULT_NOISE, seed=0)
+
+    def test_isa_circuit_drops_gates_outside_payload(self):
+        # The ISA rebuild filters gates whose qubits aren't all in the payload-physical
+        # mapping. Add such a gate post-transpile and verify the call still succeeds.
+        circuit_isa = _isa_circuit()
+        # Gate on physical qubits (2, 3): neither is in payload [5, 6, 7], so the
+        # virtual reconstruction must drop it.
+        circuit_isa.cx(2, 3)
+        result = add_pauli_checks(circuit_isa, [5], _DEFAULT_NOISE, ancilla_qubits=[4], seed=0)
+        _assert_variant_progression(self, result, expected_targets=[5])
+
+    def test_lift_to_isa_circuit_drops_inactive_ancilla_and_measure(self):
+        # A synthetic variant with (a) a gate that survives, (b) a gate on an
+        # "inactive" ancilla index (beyond num_payload_virtual + num_active_checks),
+        # and (c) a measure. The lift helper must keep (a) and drop (b) and (c).
+        variant = QuantumCircuit(5, 1)
+        variant.cx(0, 1)  # payload-only gate, should survive
+        variant.cx(0, 4)  # touches inactive ancilla index 4 -> dropped
+        variant.measure(0, 0)  # measure in variant -> dropped
+
+        out = _lift_to_isa_circuit(
+            variant=variant,
+            qregs=[QuantumRegister(10, "q")],
+            cregs=[],
+            measurement_info=[],
+            num_payload_virtual=2,
+            num_active_checks=1,
+            payload_phys=[5, 6],
+            ancilla_qubits=[8],
+        )
+        # Only the surviving payload cx should remain (no measure, no inactive-ancilla gate).
+        kept = [inst for inst in out.data if inst.operation.name not in ("measure",)]
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0].operation.name, "cx")
