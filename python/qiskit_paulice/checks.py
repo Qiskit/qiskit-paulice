@@ -68,6 +68,9 @@ def add_pauli_checks(
             model will be used to estimate the effect of a given check during the check picking
             process. While one can generate a noise model from learned Pauli-Lindblad noise, a rougher
             approximation of the noise generated from backend benchmark data is often sufficient.
+            Ancilla/target edges introduced by check insertion that aren't in the supplied
+            ``GateWiseNoise`` or ``LayeredNoise`` are auto-inferred (median rate per Pauli pair
+            across the supplied data); supply them explicitly to override.
         cost: Metric to optimize. Can be ``"gamma"`` or ``"LER"`` (logical error rate).
 
             - ``"gamma"``: The gamma value associated with the inverse logical noise channel
@@ -538,11 +541,24 @@ def _is_gate_wise_noise(noise: GateNoise) -> TypeGuard[dict]:
 def _convert_layered_noise(noise: LayeredGateNoise):
     new_noise = {}
     for layer in noise:
+        # The Rust layering pass always uses canonical ``(min, max)`` edge tuples internally,
+        # so non-canonical user layer keys (e.g. ``((1, 0),)``) would otherwise silently
+        # fail to match. Canonicalize each edge and re-sort the layer's edges here.
+        canonical_layer = tuple(sorted((min(e), max(e)) for e in layer))
+        # Reject duplicate edges within a layer key (e.g. ``((a, b), (b, a))`` collapsing
+        # to the same edge twice) — ambiguous and almost certainly a user mistake.
+        if len(set(canonical_layer)) != len(canonical_layer):
+            raise ValueError(
+                f"Layer {layer!r} contains the same edge twice after canonicalization to "
+                f"(min, max) form; each edge must appear at most once per layer."
+            )
         converted_noise = []
         for p, r in noise[layer]:
             p_str = p.to_label() if isinstance(p, Pauli) else p
-            converted_noise.append((p_str, r))
-        new_noise[layer] = converted_noise
+            # User-facing strings follow Qiskit convention (rightmost char = qubit 0);
+            # the Rust consumer indexes left-to-right (leftmost char = qubit 0).
+            converted_noise.append((p_str[::-1], r))
+        new_noise[canonical_layer] = converted_noise
     return new_noise
 
 
@@ -551,10 +567,15 @@ def _convert_gate_wise_noise(noise: GateWiseNoise):
     new_noise = {}
     for edge in noise:
         converted_noise = []
-        for p, r in noise[edge]:
-            p_str = p.to_label() if isinstance(p, Pauli) else p
-            if len(p_str) != 2:
-                raise ValueError("Pauli generators must be defined on 2 qubits.")
+        for p_str, r in noise[edge]:
+            if not isinstance(p_str, str) or len(p_str) != 2:
+                raise ValueError(
+                    "Each gate-wise generator must be a 2-character Pauli string paired "
+                    "left-to-right with the edge tuple (e.g. 'XZ' on edge (a, b) = X on a, "
+                    "Z on b)."
+                )
+            # ``p_str[0]`` on edge[0], ``p_str[1]`` on edge[1] — same convention as
+            # PauliLindbladMap's sparse ``(pauli_str, indices)`` form.
             p_tuple = (pauli_map[p_str[0]], pauli_map[p_str[1]])
             converted_noise.append((p_tuple, r))
         new_noise[edge] = converted_noise

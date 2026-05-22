@@ -17,6 +17,7 @@ from __future__ import annotations
 import unittest
 
 from qiskit import QuantumCircuit, transpile
+from qiskit.quantum_info import PauliLindbladMap
 from qiskit.transpiler import CouplingMap
 from qiskit_paulice import CheckedCircuit
 from qiskit_paulice.checks import add_pauli_checks
@@ -166,13 +167,10 @@ class TestAddPauliChecksTargetIndexing(unittest.TestCase):
             )
 
 
-# All 15 non-identity 2-qubit Pauli labels, useful for building per-edge generators.
-_PAULI_2Q = [
-    "IX", "IY", "IZ",
-    "XI", "XX", "XY", "XZ",
-    "YI", "YX", "YY", "YZ",
-    "ZI", "ZX", "ZY", "ZZ",
-]
+# All 15 non-identity 2-qubit Pauli strings, useful for building per-edge generators.
+# Each string is paired left-to-right with the edge tuple ("XY" on (a, b) = X on a, Y on b),
+# mirroring the sparse form of :class:`~qiskit.quantum_info.PauliLindbladMap`.
+_PAULI_2Q = [p_a + p_b for p_a in "IXYZ" for p_b in "IXYZ" if (p_a, p_b) != ("I", "I")]
 
 
 class TestAddPauliChecksPermutations(unittest.TestCase):
@@ -187,8 +185,12 @@ class TestAddPauliChecksPermutations(unittest.TestCase):
     def test_cost_ler(self):
         """``cost="LER"`` produces a probability cost in [0, 1] for each variant."""
         result = add_pauli_checks(
-            _clifford(), [0], _DEFAULT_NOISE,
-            cost="LER", cost_nshots=200, seed=0,
+            _clifford(),
+            [0],
+            _DEFAULT_NOISE,
+            cost="LER",
+            cost_nshots=200,
+            seed=0,
         )
         _assert_variant_progression(self, result, expected_targets=[0])
         for variant in result:
@@ -199,14 +201,22 @@ class TestAddPauliChecksPermutations(unittest.TestCase):
 
     def test_method_genetic(self):
         result = add_pauli_checks(
-            _clifford(), [0], _DEFAULT_NOISE, method="genetic", seed=0,
+            _clifford(),
+            [0],
+            _DEFAULT_NOISE,
+            method="genetic",
+            seed=0,
         )
         _assert_variant_progression(self, result, expected_targets=[0])
         self.assertIsInstance(result[-1].cost, float)
 
     def test_method_windowed_genetic(self):
         result = add_pauli_checks(
-            _clifford(), [0], _DEFAULT_NOISE, method="windowed_genetic", seed=0,
+            _clifford(),
+            [0],
+            _DEFAULT_NOISE,
+            method="windowed_genetic",
+            seed=0,
         )
         _assert_variant_progression(self, result, expected_targets=[0])
         self.assertIsInstance(result[-1].cost, float)
@@ -232,8 +242,11 @@ class TestAddPauliChecksPermutations(unittest.TestCase):
     def test_custom_register_names(self):
         """Custom check_qreg_name / check_creg_name propagate to the output circuit."""
         result = add_pauli_checks(
-            _clifford(), [0], _DEFAULT_NOISE,
-            check_creg_name="my_creg", check_qreg_name="my_qreg",
+            _clifford(),
+            [0],
+            _DEFAULT_NOISE,
+            check_creg_name="my_creg",
+            check_qreg_name="my_qreg",
             seed=0,
         )
         final = result[-1].circuit
@@ -257,8 +270,96 @@ class TestAddPauliChecksPermutations(unittest.TestCase):
         baseline = add_pauli_checks(qc, [0], _DEFAULT_NOISE, **kwargs)
         # A value that would error in ISA mode (out-of-range index) is silently
         # ignored here.
-        with_bogus = add_pauli_checks(
-            qc, [0], _DEFAULT_NOISE, ancilla_qubits=[99], **kwargs
-        )
+        with_bogus = add_pauli_checks(qc, [0], _DEFAULT_NOISE, ancilla_qubits=[99], **kwargs)
         self.assertEqual(baseline[-1].check_qubits, with_bogus[-1].check_qubits)
         self.assertEqual(baseline[-1].cost, with_bogus[-1].cost)
+
+
+class TestAddPauliChecksAncillaEdgeNoiseInference(unittest.TestCase):
+    """Noise models that don't cover the ancilla/target connections inserted by check
+    picking still run end-to-end: gate-wise edges and layered layers are inferred."""
+
+    def test_gate_wise_without_ancilla_edges(self):
+        """Gate-wise noise on payload edges only — ancilla/target edges are inferred."""
+        # Payload edges from `_clifford(layers=2)`: (0, 1) and (1, 2). No ancilla edges.
+        gate_noise = {
+            (0, 1): [(p, 1e-4) for p in _PAULI_2Q],
+            (1, 0): [(p, 1e-4) for p in _PAULI_2Q],
+            (1, 2): [(p, 1e-4) for p in _PAULI_2Q],
+            (2, 1): [(p, 1e-4) for p in _PAULI_2Q],
+        }
+        noise = NoiseModel(gate_noise=gate_noise, readout_noise=1e-2)
+        result = add_pauli_checks(_clifford(), [0], noise, seed=0)
+        _assert_variant_progression(self, result, expected_targets=[0])
+        self.assertIsInstance(result[-1].cost, float)
+
+    def test_layered_without_ancilla_layers(self):
+        """Layered noise covering only payload layers used to panic on the ancilla
+        gates added by check insertion; it now infers them."""
+        # Layered noise requires a CZ-only circuit (the layering pass rejects CNOTs).
+        qc = QuantumCircuit(3)
+        for _ in range(2):
+            qc.h(0)
+            qc.cz(0, 1)
+            qc.cz(1, 2)
+            qc.s(0)
+            qc.s(2)
+        qc.measure_all()
+        # Two payload layers (position i in the Pauli string maps to qubit i).
+        layered_noise: dict[tuple[tuple[int, int], ...], list[tuple[str, float]]] = {
+            # Pauli strings in Qiskit convention: rightmost = qubit 0.
+            ((0, 1),): [("IYX", 1e-4)],
+            ((1, 2),): [("YXI", 1e-4)],
+        }
+        noise = NoiseModel(gate_noise=layered_noise, readout_noise=1e-2)
+        result = add_pauli_checks(qc, [0], noise, seed=0)
+        _assert_variant_progression(self, result, expected_targets=[0])
+        self.assertIsInstance(result[-1].cost, float)
+
+    def test_layered_factory_with_asymmetric_generator_end_to_end(self):
+        """An asymmetric Pauli generator built via from_pauli_lindblad_maps flows through
+        add_pauli_checks end-to-end (covers the full factory → boundary → picker path)."""
+        qc = QuantumCircuit(3)
+        for _ in range(2):
+            qc.h(0)
+            qc.cz(0, 1)
+            qc.cz(1, 2)
+            qc.s(0)
+            qc.s(2)
+        qc.measure_all()
+        # Asymmetric XZ generator at indices [0, 1] in a 3-qubit system: X on q0, Z on q1.
+        plm = PauliLindbladMap([("XZ", [0, 1], 1e-3)], num_qubits=3)
+        noise = NoiseModel.from_pauli_lindblad_maps([plm])
+        noise.readout_noise = 1e-2
+        result = add_pauli_checks(qc, [0], noise, seed=0)
+        _assert_variant_progression(self, result, expected_targets=[0])
+        self.assertIsInstance(result[-1].cost, float)
+
+    def test_inferred_ancilla_noise_shifts_picker_cost(self):
+        """Inferred gate-wise noise on the ancilla/target edges is actually applied — the
+        picker's cost is strictly worse than a baseline where the ancilla edges are
+        explicitly given empty (zero-rate) noise so the inference fallback doesn't fire."""
+        payload_rate = 1e-3
+        payload_gens = [(p, payload_rate) for p in _PAULI_2Q]
+        payload = {
+            (0, 1): payload_gens,
+            (1, 0): payload_gens,
+            (1, 2): payload_gens,
+            (2, 1): payload_gens,
+        }
+        # Inferred-ancilla model: ancilla edges are absent → fallback fires with median rate.
+        inferred = NoiseModel(gate_noise=dict(payload), readout_noise=1e-2)
+        # Explicit-empty model: ancilla edges present with empty generator lists, so the
+        # Rust applicator finds them and skips the inference fallback. The non-ISA ancilla
+        # for a 3-qubit input is qubit 3.
+        ancilla_edges = {(3, 0): [], (0, 3): [], (3, 1): [], (1, 3): [], (3, 2): [], (2, 3): []}
+        explicit_empty = NoiseModel(
+            gate_noise={**payload, **ancilla_edges},
+            readout_noise=1e-2,
+        )
+
+        r_inferred = add_pauli_checks(_clifford(), [0], inferred, cost="gamma", seed=0)
+        r_empty = add_pauli_checks(_clifford(), [0], explicit_empty, cost="gamma", seed=0)
+        # Inferred ancilla noise adds uncaught logical errors; the gamma cost must be
+        # strictly higher than the zero-ancilla-noise baseline.
+        self.assertGreater(r_inferred[-1].cost, r_empty[-1].cost)

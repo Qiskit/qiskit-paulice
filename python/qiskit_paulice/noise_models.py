@@ -38,18 +38,18 @@ LayeredGateNoise = dict[tuple[tuple[int, int], ...], list[tuple[Pauli | str, flo
     **before** the gates in the layer.
 
 Keys are tuples of qubit index pairs (edges) defining a layer. Values are lists of
-``(pauli, rate)`` tuples where ``pauli`` is a Pauli or Pauli string defined over all qubits and
-``rate`` is the associated error rate.
+``(pauli, rate)`` tuples where ``pauli`` is a Pauli or Pauli string defined over all qubits
+and ``rate`` is the associated error rate.
 """
 
-GateWiseNoise = dict[tuple[int, int], list[tuple[Pauli | str, float]]]
+GateWiseNoise = dict[tuple[int, int], list[tuple[str, float]]]
 """Gate-wise noise model mapping qubit pairs to a Pauli noise channel.
 
 Keys are tuples of qubit index pairs representing edges. Values are lists of (pauli, rate)
-tuples where ``pauli`` is a 2-qubit :class:`qiskit.quantum_info.Pauli` or Pauli string and
-``rate`` is the associated error rate. A Pauli generator, "XY", associated with an edge,
-``(a, b)``, is interprted such that the ``X`` error is on ``a`` and the ``Y`` error is
-on ``b``.
+tuples where ``pauli`` is a 2-character Pauli string and ``rate`` is the associated error
+rate. The string is paired left-to-right with the edge tuple — matching
+:class:`~qiskit.quantum_info.PauliLindbladMap`'s sparse form ``(pauli_str, indices)``: for
+edge ``(a, b)``, ``"XZ"`` places ``X`` on ``a`` and ``Z`` on ``b``.
 """
 
 GateNoise = UniformGateNoise | LayeredGateNoise | GateWiseNoise
@@ -81,7 +81,7 @@ class NoiseModel:
         backend: BackendV2,
         layout: Sequence[int],
         uniform_gate_noise: bool = False,
-        pauli_bases: Sequence[Pauli | str] | None = None,
+        pauli_bases: Sequence[str] | None = None,
     ) -> NoiseModel:
         """Instantiate a :class:`.NoiseModel` from backend calibration data.
 
@@ -104,9 +104,11 @@ class NoiseModel:
                 If ``False``, ``gate_noise`` will be a :class:`.GateWiseNoise` instance where each
                 edge is associated with a custom noise channel based on backend calibration data.
             pauli_bases: For :class:`.GateWiseNoise` models, ``pauli_bases`` are the bases over which
-                the error probability reported from the backend will be distributed. The default
-                behavior is to use the full 2Q Pauli basis excluding ``II``. For :class:`UniformNoise`,
-                the full basis is assumed, and this argument is ignored.
+                the error probability reported from the backend will be distributed. Each basis is a
+                2-character Pauli string paired left-to-right with the edge tuple, so ``"XZ"`` on
+                edge ``(a, b)`` places ``X`` on ``a`` and ``Z`` on ``b``. The default behavior is
+                to use the full 2Q Pauli basis excluding ``"II"``. For :class:`UniformNoise`, the
+                full basis is assumed, and this argument is ignored.
 
         Returns:
             A :class:`NoiseModel` instance containing gate and readout noise derived from backend
@@ -124,28 +126,32 @@ class NoiseModel:
         # since the full basis is always assumed in that case.
         if pauli_bases is None:
             pauli_bases = [p1 + p2 for p1 in "IXYZ" for p2 in "IXYZ" if (p1, p2) != ("I", "I")]
-        pauli_bases = [p.to_label() if isinstance(p, Pauli) else p for p in pauli_bases]
-
-        # Validate that all Pauli bases are 2-qubit
         if not uniform_gate_noise:
             for basis in pauli_bases:
-                if len(basis) != 2:
+                if not isinstance(basis, str) or len(basis) != 2:
                     raise ValueError(
-                        f"All Pauli bases must be 2-qubit for gate-wise noise models. Got: '{basis}'"
+                        f"Each Pauli basis must be a 2-character string. Got: {basis!r}"
                     )
 
         # Mapping from physical to virtual qubit indices.
         phys_to_virt = {phys: virt for virt, phys in enumerate(layout)}
 
-        # Collect error data for edges. The rust GateWiseNoiseModel looks up a directed key
-        # `(qbits[0], qbits[1])` straight off each gate (see src/noise_model.rs:97), so we
-        # populate both orientations regardless of whether the coupling map provides both.
+        # Collect error data once per physical edge (coupling maps often list both
+        # orientations). For each edge we populate both directed keys in the output dict:
+        # the rust GateWiseNoiseModel looks up `(qbits[0], qbits[1])` straight off each gate
+        # (see src/noise_model.rs:97), and we want the noise to land on the same physical
+        # qubits regardless of which way the gate happens to be ordered.
         gate_noise_per_gate: dict[tuple[int, int], list[tuple[str, float]]] = {}
         gate_noise_per_edge: list[float] = []
         qubit_set = set(layout)
+        seen_phys: set[tuple[int, int]] = set()
         for edge in backend.coupling_map:
             if edge[0] not in qubit_set or edge[1] not in qubit_set:
                 continue
+            canonical_phys = (min(edge), max(edge))
+            if canonical_phys in seen_phys:
+                continue
+            seen_phys.add(canonical_phys)
 
             # Collect non-None errors for this edge across all 2Q instructions
             edge_errors = [
@@ -162,12 +168,19 @@ class NoiseModel:
             if uniform_gate_noise:
                 gate_noise_per_edge.append(mean_edge_error)
             else:
-                a, b = phys_to_virt[edge[0]], phys_to_virt[edge[1]]
+                # The user's ``pauli_bases`` is placed on the canonical virtual direction
+                # (lower virtual index first); the reverse direction stores the swapped
+                # Pauli string so the noise lands on the same physical qubits regardless
+                # of how the gate's `qbits` happen to be ordered at evaluation time.
+                v0 = phys_to_virt[edge[0]]
+                v1 = phys_to_virt[edge[1]]
+                a, b = (v0, v1) if v0 < v1 else (v1, v0)
                 prob_per_basis = mean_edge_error / len(pauli_bases)
                 rate_per_basis = -0.5 * float(np.log(1.0 - 2.0 * prob_per_basis))
                 generators = [(g, rate_per_basis) for g in pauli_bases]
+                mirrored = [(g[::-1], rate_per_basis) for g in pauli_bases]
                 gate_noise_per_gate[(a, b)] = generators
-                gate_noise_per_gate[(b, a)] = generators
+                gate_noise_per_gate[(b, a)] = mirrored
 
         # Mean readout error probability across qubits in layout.
         valid_readout = [

@@ -102,30 +102,69 @@ impl GateWiseNoiseModel {
 
 impl NoiseModelLike for GateWiseNoiseModel {
     fn get_generators(&self, circuit: &CliffordCircuit) -> (Vec<NoiseGenerator>, CliffordCircuit) {
+        let fallback = _infer_gatewise_fallback(&self.gate_models);
         let mut generators = Vec::new();
         for (index, gate) in circuit.gates.iter().enumerate() {
             if gate.arity() == 2 {
                 let qbits = _get_qbits(gate);
                 let k = (qbits[0], qbits[1]);
-                let loc_generators = self.gate_models.get(&k);
-                if let Some(loc_generators) = loc_generators {
-                    for (pauli_pair, rate) in loc_generators.iter() {
-                        let mut pauli = SparsePauli::new();
-                        let wire0 = Wire::GateWire(index, 0);
-                        let wire1 = Wire::GateWire(index, 1);
-                        if pauli_pair.0 != 0 {
-                            pauli.update(wire0, pauli_pair.0);
-                        }
-                        if pauli_pair.1 != 0 {
-                            pauli.update(wire1, pauli_pair.1);
-                        }
-                        generators.push((pauli, *rate));
+                let loc_generators = self.gate_models.get(&k).unwrap_or(&fallback);
+                for (pauli_pair, rate) in loc_generators.iter() {
+                    let mut pauli = SparsePauli::new();
+                    let wire0 = Wire::GateWire(index, 0);
+                    let wire1 = Wire::GateWire(index, 1);
+                    if pauli_pair.0 != 0 {
+                        pauli.update(wire0, pauli_pair.0);
                     }
+                    if pauli_pair.1 != 0 {
+                        pauli.update(wire1, pauli_pair.1);
+                    }
+                    generators.push((pauli, *rate));
                 }
             }
         }
         (generators, circuit.clone())
     }
+}
+
+/// Median of a vec of f64s; mutates the input by sorting it. Returns 0.0 if empty.
+fn _median(values: &mut [f64]) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = values.len();
+    if n % 2 == 1 {
+        values[n / 2]
+    } else {
+        (values[n / 2 - 1] + values[n / 2]) / 2.0
+    }
+}
+
+/// Build a fallback generator list for a gate-wise noise model by taking the median rate
+/// per Pauli pair across the user-supplied edges. Missing pairs on a given edge contribute 0.
+fn _infer_gatewise_fallback(gate_models: &GateDescription) -> Vec<((u8, u8), f64)> {
+    if gate_models.is_empty() {
+        return Vec::new();
+    }
+    let mut all_pairs: HashSet<(u8, u8)> = HashSet::new();
+    for generators in gate_models.values() {
+        for (pair, _) in generators.iter() {
+            all_pairs.insert(*pair);
+        }
+    }
+    let mut fallback = Vec::new();
+    for pair in all_pairs.iter() {
+        let mut rates: Vec<f64> = gate_models
+            .values()
+            .map(|gens| gens.iter().filter(|(p, _)| p == pair).map(|(_, r)| *r).sum())
+            .collect();
+        let m = _median(&mut rates);
+        if m > 0.0 {
+            fallback.push((*pair, m));
+        }
+    }
+    fallback
 }
 
 /// A noise model that applies a specified set of Pauli generators *before* each layer of gates acting on a specific set of pairs of qubits.
@@ -146,20 +185,45 @@ impl LayeredNoiseModel {
 
 impl NoiseModelLike for LayeredNoiseModel {
     fn get_generators(&self, circuit: &CliffordCircuit) -> (Vec<NoiseGenerator>, CliffordCircuit) {
-        let layer_types = self
+        let num_qubits = circuit.nqbits;
+
+        // Effective layer_models = user-supplied entries plus a synthesized single-edge layer for
+        // each canonical (a < b) edge in the circuit that isn't already a single-edge key. This
+        // guarantees `get_layered_circuit` can always route gates without panicking, and supplies
+        // inferred noise for edges the user didn't characterize (e.g. ancilla-target connections).
+        let existing_single: HashSet<(usize, usize)> = self
             .layer_models
+            .keys()
+            .filter(|k| k.len() == 1)
+            .map(|k| _canonical(k[0]))
+            .collect();
+        let edge_marginals = _layer_edge_marginals(&self.layer_models, num_qubits);
+        let mut effective_layer_models = self.layer_models.clone();
+        for edge in _circuit_edges(circuit) {
+            if existing_single.contains(&edge) {
+                continue;
+            }
+            let key = vec![edge];
+            if effective_layer_models.contains_key(&key) {
+                continue;
+            }
+            let inferred = _infer_layered_generators(edge, &edge_marginals, num_qubits);
+            effective_layer_models.insert(key, inferred);
+        }
+
+        let layer_types = effective_layer_models
             .keys()
             .map(|d| HashSet::from_iter(d.iter().cloned()))
             .collect::<Vec<_>>();
         let layers = get_layered_circuit(circuit.clone(), &layer_types);
-        let mut new_circuit = CliffordCircuit::new(circuit.nqbits);
-        let mut last_wires: Vec<_> = (0..circuit.nqbits).map(Wire::Input).collect();
+        let mut new_circuit = CliffordCircuit::new(num_qubits);
+        let mut last_wires: Vec<_> = (0..num_qubits).map(Wire::Input).collect();
         let mut generators = Vec::new();
         for (layer, layer_index) in layers {
             if let Some(i) = layer_index {
                 let mut layer_key: Vec<(usize, usize)> = layer_types[i].iter().cloned().collect();
                 layer_key.sort();
-                if let Some(loc_generators) = self.layer_models.get(&layer_key) {
+                if let Some(loc_generators) = effective_layer_models.get(&layer_key) {
                     for (generator, rate) in loc_generators.iter() {
                         let mut spauli = SparsePauli::new();
                         for (wire, pauli) in last_wires.iter().zip(generator.chars()) {
@@ -192,6 +256,121 @@ impl NoiseModelLike for LayeredNoiseModel {
             }
         }
         (generators, new_circuit)
+    }
+}
+
+fn _canonical(edge: (usize, usize)) -> (usize, usize) {
+    if edge.0 <= edge.1 {
+        edge
+    } else {
+        (edge.1, edge.0)
+    }
+}
+
+/// The canonical (min, max) edges that appear on 2-qubit gates of the circuit.
+fn _circuit_edges(circuit: &CliffordCircuit) -> HashSet<(usize, usize)> {
+    let mut edges = HashSet::new();
+    for gate in circuit.gates.iter() {
+        if gate.arity() == 2 {
+            let qbits = _get_qbits(gate);
+            edges.insert(_canonical((qbits[0], qbits[1])));
+        }
+    }
+    edges
+}
+
+/// For each canonical edge that has any 2-qubit-support generator in any layer, return the list of
+/// per-layer marginals: each marginal is a map from the (p_low, p_high) Pauli pair on that edge to
+/// the summed rate within a single layer.
+fn _layer_edge_marginals(
+    layer_models: &LayerDescription,
+    num_qubits: usize,
+) -> HashMap<(usize, usize), Vec<HashMap<(u8, u8), f64>>> {
+    let mut result: HashMap<(usize, usize), Vec<HashMap<(u8, u8), f64>>> = HashMap::new();
+    for generators in layer_models.values() {
+        let mut per_edge: HashMap<(usize, usize), HashMap<(u8, u8), f64>> = HashMap::new();
+        for (pauli_str, rate) in generators.iter() {
+            // Position i in the string maps to qubit i (matches the iteration in
+            // `LayeredNoiseModel::get_generators`).
+            let mut non_i: Vec<(usize, u8)> = Vec::new();
+            for (i, c) in pauli_str.chars().enumerate() {
+                if i >= num_qubits {
+                    break;
+                }
+                let p = match c {
+                    'X' => 1u8,
+                    'Y' => 2u8,
+                    'Z' => 3u8,
+                    _ => continue,
+                };
+                non_i.push((i, p));
+            }
+            if non_i.len() != 2 {
+                continue;
+            }
+            let (pos_a, p_a) = non_i[0];
+            let (pos_b, p_b) = non_i[1];
+            // pos_a < pos_b by enumerate order, so the edge is already canonical.
+            let entry = per_edge
+                .entry((pos_a, pos_b))
+                .or_default()
+                .entry((p_a, p_b))
+                .or_insert(0.0);
+            *entry += rate;
+        }
+        for (edge, m) in per_edge.into_iter() {
+            result.entry(edge).or_default().push(m);
+        }
+    }
+    result
+}
+
+/// Build inferred single-edge layer generators (full-circuit Pauli strings) for `edge`. If the
+/// edge has marginals (i.e. some user layer contains a 2-qubit generator on exactly that edge),
+/// take the median rate per Pauli pair across those marginal entries. Otherwise pool marginals
+/// across every covered edge in the model and take the median per Pauli pair.
+fn _infer_layered_generators(
+    edge: (usize, usize),
+    edge_marginals: &HashMap<(usize, usize), Vec<HashMap<(u8, u8), f64>>>,
+    num_qubits: usize,
+) -> Vec<(String, f64)> {
+    let source: Vec<&HashMap<(u8, u8), f64>> = if let Some(v) = edge_marginals.get(&edge) {
+        v.iter().collect()
+    } else {
+        edge_marginals.values().flat_map(|v| v.iter()).collect()
+    };
+    if source.is_empty() {
+        return Vec::new();
+    }
+    let mut all_pairs: HashSet<(u8, u8)> = HashSet::new();
+    for m in source.iter() {
+        for p in m.keys() {
+            all_pairs.insert(*p);
+        }
+    }
+    let mut result = Vec::new();
+    for pair in all_pairs.iter() {
+        let mut rates: Vec<f64> = source
+            .iter()
+            .map(|m| *m.get(pair).unwrap_or(&0.0))
+            .collect();
+        let median = _median(&mut rates);
+        if median > 0.0 {
+            let mut chars = vec!['I'; num_qubits];
+            chars[edge.0] = _pauli_char(pair.0);
+            chars[edge.1] = _pauli_char(pair.1);
+            result.push((chars.into_iter().collect::<String>(), median));
+        }
+    }
+    result
+}
+
+fn _pauli_char(p: u8) -> char {
+    match p {
+        1 => 'X',
+        2 => 'Y',
+        3 => 'Z',
+        _ => 'I',
     }
 }
 impl Display for LayeredNoiseModel {
@@ -321,6 +500,7 @@ impl NoiseModel {
     }
     /// Adds a custom channel after each 2-qubit gate in the circuit.
     /// Channels are specified by a mapping from (qbit1, qbit2) tuples to lists of (pauli_pair, rate) tuples.
+    /// Edges absent from the mapping fall back to a median-per-Pauli-pair channel inferred from the supplied edges.
     #[staticmethod]
     pub fn gate_wise(gate_models: GateDescription) -> Self {
         Self {
@@ -329,6 +509,7 @@ impl NoiseModel {
     }
     ///Adds a layer of noise generators in front of each entangling layer in the circuit.
     ///Layers are specified by a mapping from lists of (qbit1, qbit2) tuples to lists of (pauli_list, rate) tuples.
+    ///Any 2-qubit edge not covered by a supplied layer is treated as its own single-edge layer, with noise taken from edge marginals of the supplied layers (or median-inferred if the edge appears in none).
     #[staticmethod]
     pub fn layered(layer_models: LayerDescription) -> Self {
         Self {
