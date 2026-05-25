@@ -111,12 +111,14 @@ Future work
 Installation
 ------------
 
-We encourage installing this package via ``pip``, when possible:
+This package is not currently published on PyPI. Until a PyPI release is
+available, install it from source:
 
 .. code-block:: bash
 
-   pip install qiskit-paulice
-
+   git clone https://github.com/Qiskit/qiskit-paulice.git
+   cd qiskit-paulice
+   pip install .
 
 For more installation information refer to the `installation instructions <install.rst>`_ in the
 documentation.

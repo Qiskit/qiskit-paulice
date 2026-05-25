@@ -19,26 +19,16 @@ Activate your new environment.
 
     source /path/to/virtual/environment/bin/activate
 
-There are two primary ways to install this package -- from PyPI or source. The preferred method is to install from PyPI:
-
-Install from PyPI
-^^^^^^^^^^^^^^^^^
-
-.. code:: sh
-
-    pip install qiskit-paulice
-
+This package is not currently published on PyPI. Until a PyPI release is available, install it from source.
 
 Install from Source
 ^^^^^^^^^^^^^^^^^^^
 
-Users who wish to develop in the repository or run the notebooks locally may want to install from source.
-
-If so, the first step is to clone the ``qiskit-paulice`` repository.
+The first step is to clone the ``qiskit-paulice`` repository.
 
 .. code:: sh
 
-    git clone git@github.com:Qiskit/qiskit-paulice.git
+    git clone https://github.com/Qiskit/qiskit-paulice.git
 
 Next, install the Rust toolchain, upgrade pip, and enter the repository. Refer to the `Rust documentation <https://www.rust-lang.org/tools/install>`__
 for instructions on installing the toolchain.
@@ -47,11 +37,16 @@ for instructions on installing the toolchain.
     
     ### <INSTALL RUST HERE> ###
     pip install --upgrade pip
-    cd pauli-prop
+    cd qiskit-paulice
 
-The next step is to install ``qiskit-paulice`` to the virtual environment. If you plan on running the notebooks, install the
-notebook dependencies in order to run all the visualizations in the notebooks. If you plan on developing in the repository, you
-may want to install the ``dev`` dependencies.
+Install ``qiskit-paulice`` to the virtual environment.
+
+.. code:: sh
+
+    pip install .
+
+If you plan on running the notebooks, install the notebook dependencies in order to run all the visualizations in the notebooks.
+If you plan on developing in the repository, you may want to install the ``dev`` dependencies.
 
 Adjust the options below to suit your needs.
 
@@ -64,4 +59,4 @@ If you installed the notebook dependencies, you can get started by running the n
 .. code::
 
     cd docs/
-    jupyter lab'
+    jupyter lab

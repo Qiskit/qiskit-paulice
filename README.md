@@ -108,10 +108,12 @@ All documentation is available at https://qiskit.github.io/qiskit-paulice/.
 
 ### Installation
 
-We encourage installing this package via `pip`, when possible:
+This package is not currently published on PyPI. Until a PyPI release is available, install it from source:
 
 ```bash
-pip install 'qiskit-paulice'
+git clone https://github.com/Qiskit/qiskit-paulice.git
+cd qiskit-paulice
+pip install .
 ```
 
 For more installation information refer to these [installation instructions](docs/install.rst).
