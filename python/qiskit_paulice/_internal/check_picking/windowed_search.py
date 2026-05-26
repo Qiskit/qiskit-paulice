@@ -68,7 +68,7 @@ def _get_good_checks_randomized(support, max_width, check_picker, ntries, paulis
         # Derive a Rust-side seed from `np.random` so the decoder's middle-wire
         # choice is reproducible whenever the caller has seeded `np.random`. The
         # int(...) cast avoids passing a numpy scalar through PyO3.
-        rust_seed = int(np.random.randint(0, 2**32 - 1))
+        rust_seed = int(np.random.randint(0, 2**32 - 1, dtype=np.int64))
         picker_copy.set_support(actual_support, paulis or [1, 2, 3], seed=rust_seed)
         score = picker_copy.find_good_check()
         if score is not None:

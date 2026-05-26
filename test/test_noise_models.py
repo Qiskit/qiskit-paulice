@@ -17,8 +17,12 @@ from __future__ import annotations
 import unittest
 
 import numpy as np
+from qiskit import QuantumCircuit
 from qiskit.quantum_info import Pauli, PauliLindbladMap
 from qiskit_ibm_runtime.fake_provider import FakeFez
+from qiskit_paulice._internal._internal_r import NoiseModel as _NoiseModel
+from qiskit_paulice._internal.simulation import get_gamma
+from qiskit_paulice.checks import _convert_gate_wise_noise, _convert_layered_noise
 from qiskit_paulice.noise_models import NoiseModel
 
 
@@ -177,7 +181,8 @@ class TestNoiseModels(unittest.TestCase):
                 if errors:
                     edge_errors[edge] = np.mean(errors)
 
-        # Test with custom Pauli bases (only 3 bases)
+        # Test with custom Pauli bases (only 3 bases) — each basis is a 2-character Pauli
+        # string paired left-to-right with the edge tuple.
         custom_bases = ["XX", "YY", "ZZ"]
         noise = NoiseModel.from_backend(
             backend, layout=layout, uniform_gate_noise=False, pauli_bases=custom_bases
@@ -203,23 +208,6 @@ class TestNoiseModels(unittest.TestCase):
                 # Verify the rate matches the expected value
                 self.assertAlmostEqual(rate, expected_rate, places=10)
 
-    def test_from_backend_pauli_objects(self):
-        """Test from_backend with Pauli objects as bases."""
-        backend = FakeFez()
-        layout = [0, 1, 2]
-
-        # Test with Pauli objects
-        custom_bases = [Pauli("XX"), Pauli("YY"), Pauli("ZZ")]
-        noise = NoiseModel.from_backend(
-            backend, layout=layout, uniform_gate_noise=False, pauli_bases=custom_bases
-        )
-
-        # Check that Pauli objects were converted to strings
-        for _edge, generators in noise.gate_noise.items():
-            for pauli, _rate in generators:
-                self.assertIsInstance(pauli, str)
-                self.assertIn(pauli, ["XX", "YY", "ZZ"])
-
     def test_from_backend_invalid_qubits(self):
         """Test from_backend with invalid qubit indices."""
         backend = FakeFez()
@@ -235,16 +223,27 @@ class TestNoiseModels(unittest.TestCase):
         self.assertIn("Invalid qubits", str(cm.exception))
 
     def test_from_backend_invalid_pauli_bases(self):
-        """Test that non-2-qubit Pauli bases raise an error for gate-wise noise."""
+        """Test that malformed Pauli bases raise an error for gate-wise noise."""
         backend = FakeFez()
         layout = [0, 1, 2]
 
-        # Test with 1-qubit Pauli basis (should fail)
+        # Bases must be 2-character strings; 1-character strings are rejected.
         with self.assertRaises(ValueError) as cm:
             NoiseModel.from_backend(
                 backend, layout=layout, uniform_gate_noise=False, pauli_bases=["X", "Y", "Z"]
             )
-        self.assertIn("2-qubit", str(cm.exception))
+        self.assertIn("2-character", str(cm.exception))
+
+        # Non-string entries (e.g. Pauli objects) are rejected — match PauliLindbladMap's
+        # sparse-form contract.
+        with self.assertRaises(ValueError) as cm:
+            NoiseModel.from_backend(
+                backend,
+                layout=layout,
+                uniform_gate_noise=False,
+                pauli_bases=[Pauli("XX"), Pauli("YY")],
+            )
+        self.assertIn("2-character", str(cm.exception))
 
     def test_from_backend_missing_data(self):
         """Test from_backend with missing calibration data."""
@@ -476,6 +475,292 @@ class TestNoiseModels(unittest.TestCase):
         self.assertEqual(noise.gate_noise, {})
         self.assertIsNone(noise.readout_noise)
         self.assertIsNone(noise.idling_noise)
+
+
+def _full_basis_gens(rate: float) -> list[tuple[tuple[int, int], float]]:
+    """All 15 non-II Pauli pairs at a uniform rate (gate-wise generator format)."""
+    return [((p1, p2), rate) for p1 in range(4) for p2 in range(4) if (p1, p2) != (0, 0)]
+
+
+def _both_dirs(edge: tuple[int, int], gens):
+    """Populate both ``(a, b)`` and ``(b, a)`` with identical generators."""
+    a, b = edge
+    return {(a, b): gens, (b, a): gens}
+
+
+class TestGateWiseInference(unittest.TestCase):
+    """Edges that aren't in ``gate_models`` fall back to a median-per-Pauli-pair channel."""
+
+    def test_uniform_rate_inferred_edge_matches_explicit(self):
+        """Edges with identical uniform noise have a uniform median; the inferred edge
+        produces the same energy as if it were specified explicitly."""
+        qc = QuantumCircuit(3)
+        qc.cz(0, 1)
+        qc.cz(0, 2)  # not covered by partial model
+
+        gens = _full_basis_gens(1e-3)
+        partial = _NoiseModel.gate_wise(_both_dirs((0, 1), gens))
+        explicit = _NoiseModel.gate_wise({**_both_dirs((0, 1), gens), **_both_dirs((0, 2), gens)})
+
+        self.assertAlmostEqual(
+            get_gamma(qc, measured_qubits="all", noise_models=[partial]),
+            get_gamma(qc, measured_qubits="all", noise_models=[explicit]),
+            places=12,
+        )
+
+    def test_median_used_for_asymmetric_rates(self):
+        """With unequal per-edge rates, the inferred edge takes the median rate per Pauli pair."""
+        qc = QuantumCircuit(4)
+        qc.cz(0, 1)
+        qc.cz(1, 2)
+        qc.cz(2, 3)
+        qc.cz(0, 3)  # inferred
+
+        r1, r2, r3 = 1e-4, 3e-4, 5e-4  # median = r2
+
+        partial_map: dict = {}
+        partial_map.update(_both_dirs((0, 1), _full_basis_gens(r1)))
+        partial_map.update(_both_dirs((1, 2), _full_basis_gens(r2)))
+        partial_map.update(_both_dirs((2, 3), _full_basis_gens(r3)))
+        partial = _NoiseModel.gate_wise(partial_map)
+
+        explicit_map = dict(partial_map)
+        explicit_map.update(_both_dirs((0, 3), _full_basis_gens(r2)))
+        explicit = _NoiseModel.gate_wise(explicit_map)
+
+        self.assertAlmostEqual(
+            get_gamma(qc, measured_qubits="all", noise_models=[partial]),
+            get_gamma(qc, measured_qubits="all", noise_models=[explicit]),
+            places=12,
+        )
+
+    def test_inferred_edge_is_nonzero(self):
+        """A model that doesn't cover an edge should still apply *some* noise to it
+        (the prior behavior of silently treating the edge as zero-noise is gone)."""
+        qc = QuantumCircuit(3)
+        qc.cz(0, 1)
+        qc.cz(0, 2)  # inferred
+
+        partial = _NoiseModel.gate_wise(_both_dirs((0, 1), _full_basis_gens(1e-3)))
+        covered_only = _NoiseModel.gate_wise(_both_dirs((0, 1), _full_basis_gens(1e-3)))
+
+        # Same circuit with only one CZ — there is no inference target.
+        qc_one = QuantumCircuit(3)
+        qc_one.cz(0, 1)
+
+        self.assertGreater(
+            get_gamma(qc, measured_qubits="all", noise_models=[partial]),
+            get_gamma(qc_one, measured_qubits="all", noise_models=[covered_only]),
+        )
+
+    def test_empty_model_falls_back_to_zero(self):
+        """An empty ``gate_models`` has nothing to median over, so untouched edges stay
+        silent — equivalent to no gate noise at all."""
+        qc = QuantumCircuit(3)
+        qc.cz(0, 1)
+        qc.cz(0, 2)
+        empty = _NoiseModel.gate_wise({})
+        readout = _NoiseModel.readout(1e-3)
+        # Energy with empty gate noise + readout is the same as readout alone.
+        self.assertAlmostEqual(
+            get_gamma(qc, measured_qubits="all", noise_models=[empty, readout]),
+            get_gamma(qc, measured_qubits="all", noise_models=[readout]),
+            places=12,
+        )
+
+
+class TestLayeredInference(unittest.TestCase):
+    """Circuit edges that aren't in any supplied layer become synthesized single-edge layers."""
+
+    def test_missing_edge_does_not_panic(self):
+        """A layered model that doesn't mention an edge in the circuit used to panic;
+        now it produces a finite energy."""
+        qc = QuantumCircuit(4)
+        qc.cz(0, 1)
+        qc.cz(2, 3)  # not in any supplied layer
+
+        layered = _NoiseModel.layered({((0, 1),): [("XYII", 1e-3)]})
+        energy = get_gamma(qc, measured_qubits="all", noise_models=[layered])
+        self.assertTrue(np.isfinite(energy))
+
+    def test_inferred_edge_matches_explicit_synthesis(self):
+        """With one user layer carrying a generator on (0, 1), the synthesized layer
+        for the uncovered edge (2, 3) translates that generator to the new edge."""
+        qc = QuantumCircuit(4)
+        qc.cz(0, 1)
+        qc.cz(2, 3)  # inferred
+
+        layered_partial = _NoiseModel.layered({((0, 1),): [("XYII", 1e-3)]})
+        # The expected synthesis: same Pauli pair (X, Y) on positions (2, 3), same rate.
+        layered_explicit = _NoiseModel.layered(
+            {
+                ((0, 1),): [("XYII", 1e-3)],
+                ((2, 3),): [("IIXY", 1e-3)],
+            }
+        )
+
+        self.assertAlmostEqual(
+            get_gamma(qc, measured_qubits="all", noise_models=[layered_partial]),
+            get_gamma(qc, measured_qubits="all", noise_models=[layered_explicit]),
+            places=12,
+        )
+
+    def test_user_single_edge_overrides_inference(self):
+        """If the user pre-supplies a single-edge layer key, the inference path must not
+        replace it — the user's generators are used verbatim."""
+        qc = QuantumCircuit(4)
+        qc.cz(0, 1)
+        qc.cz(2, 3)
+
+        # Inference would produce ("IIXY", 1e-3) for the (2, 3) edge.
+        # User instead asks for a different Pauli/rate.
+        override = _NoiseModel.layered(
+            {
+                ((0, 1),): [("XYII", 1e-3)],
+                ((2, 3),): [("IIZZ", 5e-3)],
+            }
+        )
+        inferred_only = _NoiseModel.layered({((0, 1),): [("XYII", 1e-3)]})
+
+        # The two models differ in both Pauli structure and rate on edge (2, 3), so
+        # their energies must differ. (Equality here would mean the override was ignored.)
+        self.assertNotAlmostEqual(
+            get_gamma(qc, measured_qubits="all", noise_models=[override]),
+            get_gamma(qc, measured_qubits="all", noise_models=[inferred_only]),
+            places=6,
+        )
+
+    def test_median_across_layers_for_uncovered_edge(self):
+        """With multiple user layers carrying the same Pauli pair at different rates,
+        an uncovered edge gets the median rate."""
+        qc = QuantumCircuit(4)
+        qc.cz(0, 1)
+        qc.cz(1, 2)
+        qc.cz(2, 3)  # inferred
+
+        r_a, r_b = 1e-3, 5e-3
+        median = 3e-3  # median of {r_a, r_b} when both contribute to the same Pauli pair
+
+        partial = _NoiseModel.layered(
+            {
+                ((0, 1),): [("XYII", r_a)],
+                ((1, 2),): [("IXYI", r_b)],
+            }
+        )
+        explicit = _NoiseModel.layered(
+            {
+                ((0, 1),): [("XYII", r_a)],
+                ((1, 2),): [("IXYI", r_b)],
+                ((2, 3),): [("IIXY", median)],
+            }
+        )
+
+        self.assertAlmostEqual(
+            get_gamma(qc, measured_qubits="all", noise_models=[partial]),
+            get_gamma(qc, measured_qubits="all", noise_models=[explicit]),
+            places=12,
+        )
+
+
+class TestUserFacingConvention(unittest.TestCase):
+    """User-supplied noise specifications follow user-facing conventions and are translated
+    correctly into the Rust internals. Regression tests for the boundary converters."""
+
+    def test_layered_qiskit_string_lands_on_correct_qubits(self):
+        """A layered generator built via ``from_pauli_lindblad_maps`` with X on qubit 0 only
+        affects a q0-only measurement (X propagates through CZ to the measurement); placing X
+        on qubit 1 instead leaves a q0-only Z-measurement unaffected. This pins the
+        Qiskit-string → internal-layout reversal at the boundary."""
+        plm_a = PauliLindbladMap([("XZ", [0, 1], 0.1)], num_qubits=2)  # X on q0, Z on q1
+        plm_b = PauliLindbladMap([("ZX", [0, 1], 0.1)], num_qubits=2)  # Z on q0, X on q1
+        nm_a = NoiseModel.from_pauli_lindblad_maps([plm_a])
+        nm_b = NoiseModel.from_pauli_lindblad_maps([plm_b])
+
+        rust_a = _NoiseModel.layered(_convert_layered_noise(nm_a.gate_noise))
+        rust_b = _NoiseModel.layered(_convert_layered_noise(nm_b.gate_noise))
+
+        qc = QuantumCircuit(2)
+        qc.cz(0, 1)
+        # Measure only q0: Z(0) is invisible to a Z-basis measurement, X(0) is detectable.
+        g_a = get_gamma(qc, measured_qubits=[0], noise_models=[rust_a])
+        g_b = get_gamma(qc, measured_qubits=[0], noise_models=[rust_b])
+
+        self.assertGreater(g_a, 1.0)
+        self.assertAlmostEqual(g_b, 1.0, places=12)
+
+    def test_gate_wise_string_lands_on_correct_qubits(self):
+        """A gate-wise generator ``"PQ"`` on edge ``(a, b)`` places ``P`` on ``a`` and ``Q``
+        on ``b`` — same pairing convention as ``PauliLindbladMap``'s sparse form."""
+        # "XZ" on edge (0, 1) -> X on q0, Z on q1 -> X propagates through CZ -> detected.
+        nm_xz = NoiseModel(gate_noise={(0, 1): [("XZ", 0.1)]})
+        # "ZX" on edge (0, 1) -> Z on q0, X on q1 -> invisible to q0-only measurement.
+        nm_zx = NoiseModel(gate_noise={(0, 1): [("ZX", 0.1)]})
+
+        rust_xz = _NoiseModel.gate_wise(_convert_gate_wise_noise(nm_xz.gate_noise))
+        rust_zx = _NoiseModel.gate_wise(_convert_gate_wise_noise(nm_zx.gate_noise))
+
+        qc = QuantumCircuit(2)
+        qc.cz(0, 1)
+        g_xz = get_gamma(qc, measured_qubits=[0], noise_models=[rust_xz])
+        g_zx = get_gamma(qc, measured_qubits=[0], noise_models=[rust_zx])
+
+        self.assertGreater(g_xz, 1.0)
+        self.assertAlmostEqual(g_zx, 1.0, places=12)
+
+    def test_gate_wise_rejects_non_string_generator(self):
+        """Pauli objects and tuples are rejected; only 2-character strings are accepted,
+        matching PauliLindbladMap's sparse-form contract."""
+        noise = NoiseModel(gate_noise={(0, 1): [(("X", "Z"), 0.1)]})
+        with self.assertRaises(ValueError) as cm:
+            _convert_gate_wise_noise(noise.gate_noise)
+        self.assertIn("2-character", str(cm.exception))
+
+    def test_layered_non_canonical_edge_is_canonicalized(self):
+        """A layer key with edges in ``(max, min)`` order matches the same circuit gates
+        as the canonical ``(min, max)`` form."""
+        qc = QuantumCircuit(3)
+        qc.cz(0, 1)
+        noise_canonical = NoiseModel(gate_noise={((0, 1),): [("IYX", 1e-3)]})
+        noise_reversed = NoiseModel(gate_noise={((1, 0),): [("IYX", 1e-3)]})
+
+        rust_canonical = _NoiseModel.layered(_convert_layered_noise(noise_canonical.gate_noise))
+        rust_reversed = _NoiseModel.layered(_convert_layered_noise(noise_reversed.gate_noise))
+
+        self.assertAlmostEqual(
+            get_gamma(qc, measured_qubits="all", noise_models=[rust_canonical]),
+            get_gamma(qc, measured_qubits="all", noise_models=[rust_reversed]),
+            places=12,
+        )
+
+    def test_layered_duplicate_edge_within_layer_raises(self):
+        """A layer key that lists the same edge twice (in either orientation) is rejected."""
+        noise = NoiseModel(gate_noise={((0, 1), (1, 0)): [("IYX", 1e-3)]})
+        with self.assertRaises(ValueError) as cm:
+            _convert_layered_noise(noise.gate_noise)
+        self.assertIn("twice", str(cm.exception))
+
+    def test_from_backend_asymmetric_basis_mirrors_reverse_direction(self):
+        """When ``from_backend`` is given an asymmetric ``pauli_bases``, the canonical
+        virtual direction (lower virtual index first) gets the user's basis verbatim and
+        the reverse direction gets the reversed Pauli string — so the noise lands on the
+        same physical qubits regardless of which way the gate happens to fire."""
+        backend = FakeFez()
+        layout = [0, 1, 2]
+        bases = ["XZ"]  # asymmetric — exposes the bug without the dedup-and-mirror fix
+        noise = NoiseModel.from_backend(
+            backend, layout=layout, uniform_gate_noise=False, pauli_bases=bases
+        )
+
+        # Pick a canonical edge (a < b) that is populated, with its reverse also populated.
+        a, b = next((a, b) for (a, b) in noise.gate_noise if a < b and (b, a) in noise.gate_noise)
+        (pauli_ab, rate_ab) = noise.gate_noise[(a, b)][0]
+        (pauli_ba, rate_ba) = noise.gate_noise[(b, a)][0]
+
+        # Canonical direction has the basis as the user supplied it.
+        self.assertEqual(pauli_ab, "XZ")
+        # Reverse direction has the reversed string so the physical assignment is preserved.
+        self.assertEqual(pauli_ba, "ZX")
+        self.assertAlmostEqual(rate_ab, rate_ba, places=12)
 
 
 # Made with Bob
