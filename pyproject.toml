@@ -95,6 +95,12 @@ test-extras = "test"
 test-command = "pytest {project}/test"
 environment = 'RUSTUP_TOOLCHAIN="stable"'
 
+[tool.cibuildwheel.linux]
+# Latest qiskit dropped manylinux2014 wheels, so pip resolves to the sdist in the
+# test container and needs Rust to build it.
+before-test = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal"
+environment = { RUSTUP_TOOLCHAIN = "stable", PATH = "$HOME/.cargo/bin:$PATH" }
+
 [tool.cibuildwheel.macos]
 environment = "MACOSX_DEPLOYMENT_TARGET='10.12' RUSTUP_TOOLCHAIN=stable"
 
