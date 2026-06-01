@@ -55,7 +55,7 @@ nbtest = [
 ]
 style = [
     "ruff==0.15.4",
-    "nbqa>=1.8.5",
+    "nbqa>=1.9.1",
 ]
 lint = [
     "qiskit-paulice[style]",
