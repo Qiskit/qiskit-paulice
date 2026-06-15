@@ -19,7 +19,7 @@ pub enum Metric {
     BalancedGamma,
 }
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct PyMetric {
     pub _data: Metric,

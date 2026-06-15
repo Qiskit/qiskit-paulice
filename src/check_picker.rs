@@ -48,7 +48,7 @@ fn _to_py_wire(wire: Wire) -> PyWire {
     }
 }
 
-#[pyclass]
+#[pyclass(skip_from_py_object)]
 #[derive(Clone, Debug)]
 pub struct CheckPicker {
     /// Target circuit

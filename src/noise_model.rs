@@ -481,7 +481,7 @@ impl NoiseModelLike for UNoiseModel {
 }
 
 /// The actual python binded interface (can't pybind enums)
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone, Debug)]
 pub struct NoiseModel {
     pub model: UNoiseModel,
