@@ -35,7 +35,7 @@ Technical discussion
 --------------------
 
 Finding good sets of spacetime Pauli checks
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+"""""""""""""""""""""""""""""""""""""""""""
 
 .. image:: images/paulice.png
    :alt: Quantum circuit cartoon
@@ -68,7 +68,7 @@ these approaches are available as built-in cost functions in the ``qiskit_paulic
 function.
 
 Postselecting samples based on syndrome data
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+""""""""""""""""""""""""""""""""""""""""""""
 
 In this package a check is implemented using entangling gates between one ancilla qubit and one
 target qubit. Each ancilla starts in :math:`|0\rangle`, so :math:`Z_\text{anc}` stabilizes its
@@ -80,7 +80,7 @@ support have even parity: :math:`\bigoplus_{i=1} b_i = 0`. A sample is kept if e
 :math:`0` for its parity check.
 
 Software features
-^^^^^^^^^^^^^^^^^
+"""""""""""""""""
 
 - Automatic noise model creation from backend benchmark data
 - Rust accelerated check finding
@@ -90,7 +90,7 @@ Software features
 - Helper functionality for finding ancilla/target qubit pairs for a given backend
 
 Known issues
-^^^^^^^^^^^^
+""""""""""""
 
 - Idling noise is not provided via ``NoiseModel.get_backend`` and is ignored during check picking
 - While many stochastic steps in the algorithm are controllable with a random seed, some features
@@ -100,7 +100,7 @@ Known issues
   ``add_pauli_checks(..., cost="gamma", method="windowed")``, which are the default values.
 
 Future work
-^^^^^^^^^^^
+"""""""""""
 
 - Support for handling non-Clifford systems
 - More support for analyzing postselected noise channel
