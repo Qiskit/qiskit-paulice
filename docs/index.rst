@@ -1,9 +1,6 @@
-######################
-Qiskit addon: Paulice
-######################
-
-Overview
---------
+#######
+Paulice
+#######
 
 ``qiskit-paulice`` is a package for embedding hardware efficient Pauli checks into arbitrary
 Clifford circuits on arbitrary qubit connectivities using spacetime stabilizer codes. These checks
@@ -24,8 +21,21 @@ logical errors is a core concept of traditional error correction. Since this met
 single shot access to the quantum state it can be used in both sampling-based and expectation
 value-based workflows.
 
+Getting started
+---------------
+
+A simple guide to help you get started quickly with this package is available in the :doc:`quick start guide <guides/quickstart>`.
+
+Use case examples
+-----------------
+
+This technique has been used to improve the fidelity of samples from Clifford-dominated circuits up to 50 qubits and 2450 entangling gates `[1] <(https://arxiv.org/abs/2504.15725>`_.
+
+Technical discussion
+--------------------
+
 Finding good sets of spacetime Pauli checks
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+"""""""""""""""""""""""""""""""""""""""""""
 
 .. image:: images/paulice.png
    :alt: Quantum circuit cartoon
@@ -58,7 +68,7 @@ these approaches are available as built-in cost functions in the ``qiskit_paulic
 function.
 
 Postselecting samples based on syndrome data
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+""""""""""""""""""""""""""""""""""""""""""""
 
 In this package a check is implemented using entangling gates between one ancilla qubit and one
 target qubit. Each ancilla starts in :math:`|0\rangle`, so :math:`Z_\text{anc}` stabilizes its
@@ -69,16 +79,8 @@ are called the check's support, and the check passes if the bits, :math:`b`, in 
 support have even parity: :math:`\bigoplus_{i=1} b_i = 0`. A sample is kept if each check produces
 :math:`0` for its parity check.
 
-
-Code example
-------------
-
-Check out the `tutorial <tutorials/index.html>`_ for an overview of how to use this package to
-improve the fidelity of a stabilizer state prepared from noisy QPU samples.
-
-
-Features
---------
+Software features
+"""""""""""""""""
 
 - Automatic noise model creation from backend benchmark data
 - Rust accelerated check finding
@@ -87,9 +89,8 @@ Features
   logical error rate based on Monte Carlo sampling of noisy state
 - Helper functionality for finding ancilla/target qubit pairs for a given backend
 
-
 Known issues
-------------
+""""""""""""
 
 - Idling noise is not provided via ``NoiseModel.get_backend`` and is ignored during check picking
 - While many stochastic steps in the algorithm are controllable with a random seed, some features
@@ -98,41 +99,13 @@ Known issues
   ``method="genetic"``, and ``method="windowed_genetic"``. For deterministic behavior use
   ``add_pauli_checks(..., cost="gamma", method="windowed")``, which are the default values.
 
-
 Future work
------------
+"""""""""""
 
 - Support for handling non-Clifford systems
 - More support for analyzing postselected noise channel
 - Handling idling noise when picking checks
 - Controllable randomness for logical error rate cost function and genetic search algorithms
-
-
-Installation
-------------
-
-We encourage installing this package via ``pip``, when possible:
-
-.. code-block:: bash
-
-   pip install qiskit-paulice
-
-
-For more installation information refer to the `installation instructions <install.rst>`_ in the
-documentation.
-
-
-Deprecation Policy
-------------------
-
-We follow `semantic versioning <https://semver.org/>`_ and are guided by the principles in
-`Qiskit's deprecation policy <https://github.com/Qiskit/qiskit/blob/main/DEPRECATION.md>`_.
-We may occasionally make breaking changes in order to improve the user experience.
-When possible, we will keep old interfaces and mark them as deprecated, as long as they can
-co-exist with the new ones.
-Each substantial improvement, breaking change, or deprecation will be documented in the
-release notes.
-
 
 Contributing
 ------------
@@ -143,15 +116,23 @@ The developer guide is located at `CONTRIBUTING.md <https://github.com/Qiskit/qi
 in the root of this project's repository.
 By participating, you are expected to uphold Qiskit's `code of conduct <https://github.com/Qiskit/qiskit/blob/main/CODE_OF_CONDUCT.md>`_.
 
-We use `GitHub issues <https://github.com/Qiskit/qiskit-paulice/issues/new/choose>`_ for tracking
-requests and bugs.
+Citing this package
+-------------------
 
+If you use this package in your research, use the :download:`CITATION.bib <../CITATION.bib>` file in this project's repository to cite the appropriate reference(s).
 
 License
 -------
 
 `Apache License 2.0 <https://github.com/Qiskit/qiskit-paulice/blob/main/LICENSE.txt>`_
 
+Deprecation Policy
+------------------
+
+We follow `semantic versioning <https://semver.org/>`_. We may occasionally make breaking
+changes in order to improve the user experience. When possible, we will keep old interfaces
+and mark them as deprecated, as long as they can co-exist with the new ones. Each substantial
+improvement, breaking change, or deprecation will be documented in the release notes.
 
 .. _references:
 
@@ -160,12 +141,22 @@ References
 
 .. [1] Simon Martiel, Ali Javadi-Abhari, `Low-overhead error detection with spacetime codes <https://arxiv.org/abs/2504.15725>`_, arXiv:2504.15725 [quant-ph].
 
+.. toctree::
+   :hidden:
+
+   Documentation home <self>
+   Installation instructions <install>
+   Guides <guides/index>
+   GitHub <https://github.com/Qiskit/qiskit-paulice>
 
 .. toctree::
-  :hidden:
+   :hidden:
+   :caption: Tutorials
 
-   Documentation Home <self>
-   Installation Instructions <install>
-   Tutorials <tutorials/index>
-   API Reference <apidocs/index>
-   GitHub <https://github.com/qiskit/qiskit-paulice>
+   Low overhead error detection using spacetime codes <tutorials/01_low_overhead_error_detection_using_spacetime_codes>
+
+.. toctree::
+   :hidden:
+   :caption: API reference
+
+   Python API reference <https://quantum.cloud.ibm.com/docs/en/api/qiskit-paulice>
