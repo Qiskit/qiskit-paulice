@@ -10,3 +10,4 @@ Getting started
 These simple guides help you to get started quickly with the package.
 
 - :doc:`Quick start <quickstart>`
+- :doc:`Low overhead error detection using spacetime codes <low_overhead_error_detection_using_spacetime_codes>`

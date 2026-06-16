@@ -153,7 +153,7 @@ References
    :hidden:
    :caption: Tutorials
 
-   Low overhead error detection using spacetime codes <tutorials/01_low_overhead_error_detection_using_spacetime_codes>
+   Low overhead error detection using spacetime codes <guides/low_overhead_error_detection_using_spacetime_codes>
 
 .. toctree::
    :hidden:
