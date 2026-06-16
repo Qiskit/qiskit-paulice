@@ -13,7 +13,7 @@
   [![Coverage](https://coveralls.io/repos/github/Qiskit/qiskit-paulice/badge.svg?branch=main)](https://coveralls.io/github/Qiskit/qiskit-paulice?branch=main)
 </div>
 
-# Paulice
+# Qiskit Paulice
 
 ``qiskit-paulice`` is a package for embedding hardware efficient Pauli checks into arbitrary
 Clifford circuits on arbitrary qubit connectivities using spacetime stabilizer codes. These checks
