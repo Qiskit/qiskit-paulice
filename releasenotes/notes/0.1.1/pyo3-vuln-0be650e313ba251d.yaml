@@ -1,0 +1,4 @@
+---
+security:
+  - |
+    Bumped the required pyo3 version due to known issues in earlier versions.

@@ -47,7 +47,7 @@ for instructions on installing the toolchain.
     
     ### <INSTALL RUST HERE> ###
     pip install --upgrade pip
-    cd pauli-prop
+    cd qiskit-paulice
 
 The next step is to install ``qiskit-paulice`` to the virtual environment. If you plan on running the notebooks, install the
 notebook dependencies in order to run all the visualizations in the notebooks. If you plan on developing in the repository, you

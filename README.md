@@ -13,9 +13,7 @@
   [![Coverage](https://coveralls.io/repos/github/Qiskit/qiskit-paulice/badge.svg?branch=main)](https://coveralls.io/github/Qiskit/qiskit-paulice?branch=main)
 </div>
 
-# Qiskit addon: Paulice
-
-### Overview
+# Paulice
 
 ``qiskit-paulice`` is a package for embedding hardware efficient Pauli checks into arbitrary
 Clifford circuits on arbitrary qubit connectivities using spacetime stabilizer codes. These checks
@@ -35,6 +33,40 @@ toward practical fault tolerance since implementing stabilizer codes to protect 
 logical errors is a core concept of traditional error correction. Since this method provides
 single shot access to the quantum state it can be used in both sampling-based and expectation
 value-based workflows.
+
+----------------------------------------------------------------------------------------------------
+
+### Documentation
+
+[Documentation](https://quantum.cloud.ibm.com/docs/addons/qiskit-paulice) for this package is available on the IBM Quantum Platform.
+
+----------------------------------------------------------------------------------------------------
+
+### Installation
+
+We encourage installing this package via `pip`, when possible:
+
+```bash
+pip install 'qiskit-paulice'
+```
+
+For more installation information refer to these [installation instructions](docs/install.rst).
+
+----------------------------------------------------------------------------------------------------
+
+### Getting started
+
+A simple guide to help you get started quickly with this package is available [here](docs/guides/quickstart.ipynb).
+
+----------------------------------------------------------------------------------------------------
+
+### Use case examples
+
+This technique has been used to improve the fidelity of samples from Clifford-dominated circuits up to 50 qubits and 2450 entangling gates [[1]](https://arxiv.org/abs/2504.15725).
+
+----------------------------------------------------------------------------------------------------
+
+### Technical discussion
 
 #### Finding good sets of spacetime Pauli checks
 
@@ -76,16 +108,7 @@ circuit. The qubit indices on which this output operator has non-identity terms 
 check's support, and the check passes if the bits, $b$, in the check's support have even parity:
 $\bigoplus_{i=1} b_i = 0$. A sample is kept if each check produces $0$ for its parity check. 
 
-----------------------------------------------------------------------------------------------------
-
-### Code example
-
-Check out the [tutorial](docs/tutorials/01_low_overhead_error_detection_using_spacetime_codes.ipynb) for an overview of how to use this package to improve the fidelity of a
-stabilizer state prepared from noisy QPU samples.
-
-----------------------------------------------------------------------------------------------------
-
-### Features
+#### Software Features
 
 - Automatic noise model creation from backend benchmark data
 - Rust accelerated check finding
@@ -94,9 +117,7 @@ stabilizer state prepared from noisy QPU samples.
   logical error rate based on Monte Carlo sampling of noisy state
 - Helper functionality for finding ancilla/target qubit pairs for a given backend
 
-----------------------------------------------------------------------------------------------------
-
-### Known issues
+#### Known issues
 
 - Idling noise is not provided via ``NoiseModel.get_backend`` and is ignored during check picking
 - While many stochastic steps in the algorithm are controllable with a random seed, some features
@@ -105,42 +126,12 @@ have randomness not controllable with a seed. Specifically, the following kwargs
 and ``method="windowed_genetic"``. For deterministic behavior use:
 ``add_pauli_checks(..., cost="gamma", method="windowed")``, which are the default values.
 
-----------------------------------------------------------------------------------------------------
-
-### Future work
+#### Future work
 
 - Support for handling non-Clifford systems
 - More support for analyzing postselected noise channel
 - Handling idling noise when picking checks
 - Controllable randomness for logical error rate cost function and genetic search algorithms
-
-----------------------------------------------------------------------------------------------------
-### Documentation
-
-All documentation is available at https://qiskit.github.io/qiskit-paulice/.
-
-----------------------------------------------------------------------------------------------------
-
-### Installation
-
-We encourage installing this package via `pip`, when possible:
-
-```bash
-pip install 'qiskit-paulice'
-```
-
-For more installation information refer to these [installation instructions](docs/install.rst).
-
-----------------------------------------------------------------------------------------------------
-
-### Deprecation Policy
-
-We follow [semantic versioning](https://semver.org/) and are guided by the principles in
-[Qiskit's deprecation policy](https://github.com/Qiskit/qiskit/blob/main/DEPRECATION.md).
-We may occasionally make breaking changes in order to improve the user experience.
-When possible, we will keep old interfaces and mark them as deprecated, as long as they can co-exist
-with the new ones. Each substantial improvement, breaking change, or deprecation will be documented
-in the [release notes](https://qiskit.github.io/qiskit-addon-pna/release-notes.html).
 
 ----------------------------------------------------------------------------------------------------
 
@@ -149,14 +140,28 @@ in the [release notes](https://qiskit.github.io/qiskit-addon-pna/release-notes.h
 The source code is available [on GitHub](https://github.com/Qiskit/qiskit-paulice).
 
 The developer guide is located at [CONTRIBUTING.md](https://github.com/Qiskit/qiskit-paulice/blob/main/CONTRIBUTING.md)
-in the root of this project's repository.
-By participating, you are expected to uphold Qiskit's [code of conduct](https://github.com/Qiskit/qiskit/blob/main/CODE_OF_CONDUCT.md).
+in the root of this project's repository. By participating, you are expected to uphold Qiskit's [code of conduct](https://github.com/Qiskit/qiskit/blob/main/CODE_OF_CONDUCT.md).
+
+----------------------------------------------------------------------------------------------------
+
+### Citing this package
+
+If you use this package in your research, use the [CITATION.bib](CITATION.bib) file in this project’s repository to cite the appropriate reference(s).
 
 ----------------------------------------------------------------------------------------------------
 
 ### License
 
 [Apache License 2.0](LICENSE.txt)
+
+----------------------------------------------------------------------------------------------------
+
+### Deprecation Policy
+
+We follow [semantic versioning](https://semver.org/). We may occasionally make breaking changes in
+order to improve the user experience. When possible, we will keep old interfaces and mark them as
+deprecated, as long as they can co-exist with the new ones. Each substantial improvement, breaking
+change, or deprecation will be documented in the [release notes](https://qiskit.github.io/qiskit-paulice/release-notes.html).
 
 ----------------------------------------------------------------------------------------------------
 
