@@ -119,7 +119,7 @@ By participating, you are expected to uphold Qiskit's `code of conduct <https://
 Citing this package
 -------------------
 
-If you use this package in your research, use the `CITATION.bib <https://github.com/Qiskit/qiskit-addon-obp/blob/main/CITATION.bib>` file in this project's repository to cite the appropriate reference(s).
+If you use this package in your research, use the `CITATION.bib <https://github.com/Qiskit/qiskit-paulice/blob/main/CITATION.bib>` file in this project's repository to cite the appropriate reference(s).
 
 License
 -------
