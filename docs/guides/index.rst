@@ -1,5 +1,5 @@
-Paulice Guides
---------------
+Qiskit Paulice Guides
+---------------------
 
 .. toctree::
   :maxdepth: 1

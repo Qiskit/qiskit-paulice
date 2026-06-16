@@ -20,8 +20,8 @@ from importlib.metadata import version as metadata_version
 # be documented.
 sys.path.insert(0, os.path.abspath(".."))
 
-project = "Paulice"
-project_copyright = "2025, Qiskit addons team"
+project = "Qiskit Paulice"
+project_copyright = "2026, Qiskit addons team"
 description = "Library for implementing spacetime Pauli checks"
 author = "Qiskit addons team"
 language = "en"
