@@ -417,6 +417,7 @@ class TestAddPauliChecksErrorPaths(unittest.TestCase):
 
     def test_existing_qreg_name_collision_raises(self):
         qc = QuantumCircuit(QuantumRegister(3, "checks_q"))
+        qc.cx(0, 1)
         qc.measure_all()
         with self.assertRaisesRegex(ValueError, "quantum register named"):
             add_pauli_checks(qc, [0], _DEFAULT_NOISE, seed=0)
@@ -492,6 +493,7 @@ class TestInternalHelpers(unittest.TestCase):
         qc = QuantumCircuit(2)
         qc.add_bits([loose])
         qc.h(0)
+        qc.cx(0, 1)
         qc.measure(0, loose)
         with self.assertRaisesRegex(ValueError, "loose Clbits"):
             add_pauli_checks(qc, [0], _DEFAULT_NOISE, seed=0)
