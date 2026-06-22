@@ -2,34 +2,34 @@
 Qiskit Paulice
 ##############
 
-``qiskit-paulice`` is a package for embedding hardware efficient Pauli checks into arbitrary
+``qiskit-paulice`` is a package for embedding hardware-efficient Pauli checks into arbitrary
 Clifford circuits on arbitrary qubit connectivities using spacetime stabilizer codes. These checks
 can be used to detect logical errors during circuit execution. Postselecting only samples with no
 detected errors can improve the fidelity of states sampled with a quantum processor at the cost of
 some ancilla qubits and an increase in sampling overhead. This method is particularly suited to
 near-term hardware since it has a much milder overhead in qubits and gates compared to
-fault tolerant quantum computing, while having a better sampling overhead than error mitigation
+fault-tolerant quantum computing, while having a better sampling overhead than error mitigation
 methods such as ZNE or PEC [1]_.
 
 Although spacetime Pauli checks may be used to implement standalone error detection routines, they
 are also relevant in the context of error mitigation and error correction. Error detection can
 complement error mitigation techniques such as probabilistic error cancellation (PEC) by capturing
 some of the noise affecting gates and measurements, reducing the impact of the noise channel
-being inverted and thus reducing the sampling overhead. They may also be viewed as an early step
-toward practical fault tolerance since implementing stabilizer codes to protect data qubits from
+being inverted and thus reducing the sampling overhead. They can also be viewed as an early step
+toward practical fault tolerance, since implementing stabilizer codes to protect data qubits from
 logical errors is a core concept of traditional error correction. Since this method provides
-single shot access to the quantum state it can be used in both sampling-based and expectation
+single-shot access to the quantum state, it can be used in both sampling-based and expectation
 value-based workflows.
 
 Getting started
 ---------------
 
-A simple guide to help you get started quickly with this package is available in the :doc:`quick start guide <guides/quickstart>`.
+A simple guide to help you get started quickly with this package is available in the :doc:`quickstart guide <guides/quickstart>`.
 
 Use case examples
 -----------------
 
-This technique has been used to improve the fidelity of samples from Clifford-dominated circuits up to 50 qubits and 2450 entangling gates `[1] <(https://arxiv.org/abs/2504.15725>`_.
+This technique has been used to improve the fidelity of samples from Clifford-dominated circuits up to 50 qubits and 2450 entangling gates `[1] <https://arxiv.org/abs/2504.15725>`_.
 
 Technical discussion
 --------------------
@@ -52,7 +52,7 @@ the ideal circuit: :math:`\prod_{i}B(P_i,w_i) \in S`, where :math:`B(P,w)` is th
 of :math:`P` from :math:`w` to the beginning of the circuit, and :math:`S` is the set of all
 stabilizers of the circuit.
 
-A check is low weight if it requires few entangling gates to implement. The check picking algorithm
+A check is low weight if it requires few entangling gates to implement. The check-picking algorithm
 will favor checks that are low weight and provide the most effective error detection.
 
 A check is effective if it captures much more error than it introduces. A Pauli check is comprised
@@ -72,8 +72,8 @@ Postselecting samples based on syndrome data
 
 In this package a check is implemented using entangling gates between one ancilla qubit and one
 target qubit. Each ancilla starts in :math:`|0\rangle`, so :math:`Z_\text{anc}` stabilizes its
-input state. Forward propagating :math:`Z_\text{anc}` from the beginning of the ancilla through the
-entire checked circuit yields a Pauli operator on the output which may be higher weight and extend
+input state. Forward-propagating :math:`Z_\text{anc}` from the beginning of the ancilla through the
+entire checked circuit yields a Pauli operator on the output, which might be higher weight and extend
 into the payload circuit. The qubit indices on which this output operator has non-identity terms
 are called the check's support, and the check passes if the bits, :math:`b`, in the check's
 support have even parity: :math:`\bigoplus_{i=1} b_i = 0`. A sample is kept if each check produces
@@ -83,8 +83,8 @@ Software features
 """""""""""""""""
 
 - Automatic noise model creation from backend benchmark data
-- Rust accelerated check finding
-- 3 built-in algorithms for check finding
+- Rust-accelerated check finding
+- Three built-in algorithms for check finding
 - Evaluate efficacy of checks based on sampling overhead of postselected inverse noise channel or
   logical error rate based on Monte Carlo sampling of noisy state
 - Helper functionality for finding ancilla/target qubit pairs for a given backend
@@ -126,7 +126,7 @@ License
 
 `Apache License 2.0 <https://github.com/Qiskit/qiskit-paulice/blob/main/LICENSE.txt>`_
 
-Deprecation Policy
+Deprecation policy
 ------------------
 
 We follow `semantic versioning <https://semver.org/>`_. We may occasionally make breaking
