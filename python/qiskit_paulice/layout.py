@@ -16,7 +16,59 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from qiskit.providers import BackendV2
 from qiskit.transpiler import CouplingMap
+
+
+def get_check_qubits(
+    backend: BackendV2 | CouplingMap, layout: Sequence[int]
+) -> tuple[list[int], list[int]]:
+    """Pair payload qubits with neighboring ancillas for low-overhead checks.
+
+    Wraps :func:`get_low_overhead_ancillas` and resolves the ancilla map into two
+    parallel lists ready to pass to :func:`qiskit_paulice.add_pauli_checks` as
+    ``target_qubits`` and ``ancilla_qubits``: ``ancilla_qubits[i]`` implements a
+    check with ``target_qubits[i]``.
+
+    Each check consumes one ancilla and one distinct target qubit, so the pairing
+    is chosen as a maximum bipartite matching between ancillas and payload qubits.
+    This maximizes the number of target qubits that can be checked (a simpler
+    first-available assignment can strand a target whose only free ancilla was
+    given to a neighbor). Ancillas and their candidate targets are visited in
+    sorted order, so the result is deterministic.
+
+    Args:
+        backend: The target backend, or a :class:`~qiskit.transpiler.CouplingMap`
+            describing its connectivity.
+        layout: Physical qubit indices occupied by the payload circuit.
+
+    Returns:
+        A ``(target_qubits, ancilla_qubits)`` tuple of equal-length physical qubit
+        index lists, ordered by target qubit index.
+    """
+    coupling_map = getattr(backend, "coupling_map", backend)
+    ancilla_to_payload = get_low_overhead_ancillas(coupling_map, layout)
+
+    # Maximum bipartite matching (Kuhn's algorithm): match each ancilla to a
+    # distinct target qubit it neighbors. `matched` maps target qubit -> ancilla.
+    matched: dict[int, int] = {}
+
+    def _augment(ancilla: int, visited: set[int]) -> bool:
+        for target in sorted(ancilla_to_payload[ancilla]):
+            if target in visited:
+                continue
+            visited.add(target)
+            if target not in matched or _augment(matched[target], visited):
+                matched[target] = ancilla
+                return True
+        return False
+
+    for ancilla in sorted(ancilla_to_payload):
+        _augment(ancilla, set())
+
+    target_qubits = sorted(matched)
+    ancilla_qubits = [int(matched[t]) for t in target_qubits]
+    return [int(t) for t in target_qubits], ancilla_qubits
 
 
 def get_low_overhead_ancillas(
