@@ -1,11 +1,9 @@
-Installation Instructions
+Installation instructions
 =========================
 
-Let's see how to install the package. The first thing to do is ensure your Python environment
-is set up correctly. To create a new environment:
 
-Pre-Installation
-^^^^^^^^^^^^^^^^
+Prerequisites
+^^^^^^^^^^^^^
 
 First, create a minimal environment with only Python installed in it. We recommend using `Python virtual environments <https://docs.python.org/3.10/tutorial/venv.html>`__.
 
@@ -19,7 +17,7 @@ Activate your new environment.
 
     source /path/to/virtual/environment/bin/activate
 
-There are two primary ways to install this package -- from PyPI or source. The preferred method is to install from PyPI:
+There are two primary ways to install this package: from PyPI or from source. The preferred method is to install from PyPI:
 
 Install from PyPI
 ^^^^^^^^^^^^^^^^^
@@ -29,12 +27,12 @@ Install from PyPI
     pip install qiskit-paulice
 
 
-Install from Source
+Install from source
 ^^^^^^^^^^^^^^^^^^^
 
-Users who wish to develop in the repository or run the notebooks locally may want to install from source.
+If you plan to develop in the repository or run the notebooks locally, you should install from source.
 
-If so, the first step is to clone the ``qiskit-paulice`` repository.
+First, clone the ``qiskit-paulice`` repository.
 
 .. code:: sh
 
@@ -49,9 +47,8 @@ for instructions on installing the toolchain.
     pip install --upgrade pip
     cd qiskit-paulice
 
-The next step is to install ``qiskit-paulice`` to the virtual environment. If you plan on running the notebooks, install the
-notebook dependencies in order to run all the visualizations in the notebooks. If you plan on developing in the repository, you
-may want to install the ``dev`` dependencies.
+The next step is to install ``qiskit-paulice`` to the virtual environment. If you plan to run the notebooks and their visualizations, install the notebook dependencies.
+If you plan on developing in the repository, install the ``dev`` dependencies.
 
 Adjust the options below to suit your needs.
 
@@ -64,4 +61,4 @@ If you installed the notebook dependencies, you can get started by running the n
 .. code::
 
     cd docs/
-    jupyter lab'
+    jupyter lab
