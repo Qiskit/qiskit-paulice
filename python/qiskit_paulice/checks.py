@@ -19,7 +19,10 @@ from typing import Literal, TypeGuard
 
 import numpy as np
 from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister
+from qiskit.circuit.equivalence_library import SessionEquivalenceLibrary as _SEL
 from qiskit.quantum_info import Pauli
+from qiskit.transpiler import PassManager
+from qiskit.transpiler.passes import BasisTranslator, UnrollCustomDefinitions
 
 from ._internal import Metric as _Metric
 from ._internal import NoiseModel as _NoiseModel
@@ -116,6 +119,13 @@ def add_pauli_checks(
         raise ValueError(f"Invalid cost value: {cost}")
 
     circuit = circuit.copy()
+
+    # Capture the input circuit's gate set (basis) up front. The picker
+    # resynthesizes circuits into its own internal Clifford basis, so the
+    # outputs are translated back into this basis before returning -- otherwise
+    # an ISA circuit comes back on the right qubits but in the wrong gate set.
+    output_basis = _input_basis_gates(circuit)
+
     virtual_circuit, measurement_info, cregs, qregs = _strip_measurements_cregs_barriers(circuit)
 
     # ISA mode: input has been transpiled with an `initial_layout`, so qubit
@@ -301,6 +311,11 @@ def add_pauli_checks(
         )
         target_qubits_out = list(target_qubits)
 
+    # Re-express every output in the input circuit's basis. The picker emits its
+    # internal Clifford basis ({h, cx, cz, s, sx, sdg, sxdg}); translate back so
+    # the returned circuits match the gate set the caller transpiled to.
+    result.circuits = [_translate_to_basis(c, output_basis) for c in result.circuits]
+
     # Build the public per-variant list. `result.costs[k]` is the picker metric
     # after committing the first `k` checks.
     costs = result.costs if result.costs is not None else [None] * len(result.circuits)
@@ -318,6 +333,53 @@ def add_pauli_checks(
         )
         for k, circ in enumerate(result.circuits)
     ]
+
+
+def _input_basis_gates(circuit: QuantumCircuit) -> list[str]:
+    """Return the gate set (basis) used by ``circuit``, excluding directives.
+
+    Measurements and barriers are ignored. The returned names are used to
+    translate the picker's output back into the caller's basis.
+
+    Raises:
+        ValueError: if ``circuit`` contains no entangling (multi-qubit) gate.
+            Spacetime Pauli checks detect errors propagating through entangling
+            gates, so a circuit without any is unsupported -- and a
+            single-qubit-only basis could not even express the entangling gates
+            the checks introduce.
+    """
+    basis: set[str] = set()
+    has_entangling = False
+    for inst in circuit.data:
+        name = inst.operation.name
+        if name in ("measure", "barrier"):
+            continue
+        basis.add(name)
+        if inst.operation.num_qubits >= 2:
+            has_entangling = True
+    if not has_entangling:
+        raise ValueError(
+            "Input circuit has no entangling (multi-qubit) gates. "
+            "add_pauli_checks finds checks that detect errors on entangling "
+            "gates, so a circuit without any is unsupported."
+        )
+    return sorted(basis)
+
+
+def _translate_to_basis(circuit: QuantumCircuit, basis_gates: list[str]) -> QuantumCircuit:
+    """Re-express ``circuit`` in ``basis_gates`` via basis translation only.
+
+    No coupling map or target is supplied, so this performs a local gate-set
+    translation without any routing or relayout -- qubit placement (and any ISA
+    layout) is preserved. Registers and measurements pass through unchanged.
+    """
+    pm = PassManager(
+        [
+            UnrollCustomDefinitions(_SEL, basis_gates),
+            BasisTranslator(_SEL, basis_gates),
+        ]
+    )
+    return pm.run(circuit)
 
 
 def _strip_measurements_cregs_barriers(circuit: QuantumCircuit):

@@ -81,6 +81,34 @@ def _assert_variant_progression(test, result, *, expected_targets):
         test.assertEqual(variant.check_support, final.check_support[:k])
 
 
+def _gate_names(circ: QuantumCircuit) -> set[str]:
+    """Gate names used by ``circ``, excluding measurements and barriers."""
+    return {i.operation.name for i in circ.data if i.operation.name not in ("measure", "barrier")}
+
+
+class TestAddPauliChecksOutputBasis(unittest.TestCase):
+    """Output circuits are returned in the input circuit's gate set."""
+
+    def test_non_isa_output_in_input_basis(self):
+        # Transpile to a hardware-like basis distinct from the picker's internal
+        # Clifford basis, so the translation back to the input basis is exercised.
+        basis = {"cz", "rz", "sx", "x"}
+        circ = transpile(_clifford(), basis_gates=sorted(basis), optimization_level=1)
+        result = add_pauli_checks(circ, [0], _DEFAULT_NOISE, seed=0)
+        for variant in result:
+            self.assertLessEqual(_gate_names(variant.circuit), basis)
+
+    def test_isa_output_in_input_basis(self):
+        # _isa_circuit() is transpiled to {h, s, cx}; the checked outputs must
+        # come back in that basis rather than the picker's internal one.
+        basis = {"h", "s", "cx"}
+        result = add_pauli_checks(
+            _isa_circuit(), [5, 7], _DEFAULT_NOISE, ancilla_qubits=_ANCILLA_PHYS, seed=123
+        )
+        for variant in result:
+            self.assertLessEqual(_gate_names(variant.circuit), basis)
+
+
 class TestAddPauliChecksBasic(unittest.TestCase):
     """Test basic usage."""
 
@@ -376,6 +404,14 @@ class TestAddPauliChecksErrorPaths(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Invalid cost value"):
             add_pauli_checks(_clifford(), [0], _DEFAULT_NOISE, cost="not_a_metric", seed=0)
 
+    def test_no_entangling_gates_raises(self):
+        qc = QuantumCircuit(2)
+        qc.h(0)
+        qc.s(1)
+        qc.measure_all()
+        with self.assertRaisesRegex(ValueError, "no entangling"):
+            add_pauli_checks(qc, [0], _DEFAULT_NOISE, seed=0)
+
     def test_isa_without_ancilla_qubits_raises(self):
         with self.assertRaisesRegex(ValueError, "ancilla_qubits"):
             add_pauli_checks(_isa_circuit(), [5], _DEFAULT_NOISE, seed=0)
@@ -417,6 +453,7 @@ class TestAddPauliChecksErrorPaths(unittest.TestCase):
 
     def test_existing_qreg_name_collision_raises(self):
         qc = QuantumCircuit(QuantumRegister(3, "checks_q"))
+        qc.cx(0, 1)
         qc.measure_all()
         with self.assertRaisesRegex(ValueError, "quantum register named"):
             add_pauli_checks(qc, [0], _DEFAULT_NOISE, seed=0)
@@ -492,6 +529,7 @@ class TestInternalHelpers(unittest.TestCase):
         qc = QuantumCircuit(2)
         qc.add_bits([loose])
         qc.h(0)
+        qc.cx(0, 1)
         qc.measure(0, loose)
         with self.assertRaisesRegex(ValueError, "loose Clbits"):
             add_pauli_checks(qc, [0], _DEFAULT_NOISE, seed=0)
