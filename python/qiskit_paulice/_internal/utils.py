@@ -14,30 +14,12 @@
 """
 
 
-import numpy as np
 from qiskit import QuantumCircuit
 from qiskit.quantum_info import Pauli
 
 from ._internal_r import CheckPicker, NoiseModel
 from ._internal_r import PyMetric as Metric
 from .conversion import convert_to_rustiq_circuit
-
-
-def random_square_circuit(num_qubits: int):
-    """Generates a random squaure LNN circuit"""
-    circuit = QuantumCircuit(num_qubits)
-    circuit.h(range(num_qubits))
-    for d in range(num_qubits):
-        for i in range(d % 2, num_qubits - 1, 2):
-            circuit.cz(i, i + 1)
-        for q in range(num_qubits):
-            if np.random.randint(0, 2):
-                circuit.sx(q)
-            if np.random.randint(0, 2):
-                circuit.s(q)
-            if np.random.randint(0, 2):
-                circuit.sx(q)
-    return circuit
 
 
 def build_check_picker(

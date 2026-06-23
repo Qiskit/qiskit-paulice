@@ -40,26 +40,21 @@ class CheckedCircuits:
             Z-basis outcomes XOR together to give that check's syndrome bit.
         costs: Picker-metric values, one per variant; ``costs[k]`` is the
             metric after committing the first ``k`` checks. Length is
-            ``len(check_qubits) + 1``. ``None`` if the picker method did not
-            report it.
+            ``len(check_qubits) + 1``.
         committed_targets: The target qubits that actually received a check, in
             commit order. May be a subsequence of the requested targets when
-            some have no valid check (e.g. too-shallow wires). ``None`` if the
-            picker method did not report it (then all targets are assumed
-            committed).
+            some have no valid check (e.g. too-shallow wires).
 
     This class is internal; the public-facing ``CheckedCircuit`` (singular)
     in ``qiskit_paulice.checked_circuit`` is what users see.
     """
 
-    def __init__(self, circuits, check_qubits, virtual_zs, costs=None, committed_targets=None):
+    def __init__(self, circuits, check_qubits, virtual_zs, costs, committed_targets):
         self.circuits = circuits
         self.check_qubits = check_qubits
         self.virtual_zs = virtual_zs
-        self.costs: list[float] | None = list(costs) if costs is not None else None
-        self.committed_targets: list[int] | None = (
-            list(committed_targets) if committed_targets is not None else None
-        )
+        self.costs: list[float] = list(costs)
+        self.committed_targets: list[int] = list(committed_targets)
 
 
 def pick_checks(
@@ -112,14 +107,7 @@ def pick_checks(
     )
     if verbose:
         print("[CHECK PICKING] Initial metric value:", check_picker.get_current_energy())
-    out = method(check_picker, targets, verbose=verbose, seed=seed, **kwargs)
-    # Methods now return `(circuits, check_qubits, virtual_zs, costs, committed_targets)`;
-    # tolerate the older 4- and 3-tuple forms for backward compatibility.
-    costs = committed_targets = None
-    if len(out) == 5:
-        circuits, check_qubits, virtual_zs, costs, committed_targets = out
-    elif len(out) == 4:
-        circuits, check_qubits, virtual_zs, costs = out
-    else:
-        circuits, check_qubits, virtual_zs = out
+    circuits, check_qubits, virtual_zs, costs, committed_targets = method(
+        check_picker, targets, verbose=verbose, seed=seed, **kwargs
+    )
     return CheckedCircuits(circuits, check_qubits, virtual_zs, costs, committed_targets)

@@ -275,8 +275,6 @@ def add_pauli_checks(
     # payload -- recompute `check_qubits` from that rather than trusting the
     # station's formula, which assumes every target committed.
     committed = result.committed_targets
-    if committed is None:
-        committed = list(picker_targets)
     n_payload_v = virtual_circuit.num_qubits
     m = len(committed)
     result.check_qubits = list(range(n_payload_v, n_payload_v + m))
@@ -331,7 +329,7 @@ def add_pauli_checks(
 
     # Build the public per-variant list. `result.costs[k]` is the picker metric
     # after committing the first `k` checks.
-    costs = result.costs if result.costs is not None else [None] * len(result.circuits)
+    costs = result.costs
     target_qubits_tuple = tuple(target_qubits_out)
     check_qubits_tuple = tuple(result.check_qubits)
     check_support_tuple = tuple(tuple(s) for s in result.virtual_zs)

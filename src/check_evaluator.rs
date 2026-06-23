@@ -74,15 +74,6 @@ impl CheckEvaluator {
             Metric::BalancedGamma => coverage.balanced_gamma_apx(),
         }
     }
-    /// Shorthand to call the error-based Monte-Carlo simulation
-    pub fn get_psr_ler(&self, nshots: usize) -> (f64, f64) {
-        let all_check_qubits = self.current_checks.clone();
-        let all_virtual_zs = self.current_virtual_zs.clone();
-        let mut coverage = Coverage::new(&self.base_circuit, &self.noise_models);
-        coverage.set_check_cumulants(&all_check_qubits, &all_virtual_zs);
-        coverage.set_logical_cumulants(&self.stabilizers, &self.measured_qubits);
-        coverage.approximate_psr_ler(nshots)
-    }
     /// Utility method to infer the virtual Zs for a given check.
     /// Also checks that the check ends up diagonal when pulled to the end.
     pub fn compute_vzs(&self, check: &SparsePauli) -> Vec<usize> {
