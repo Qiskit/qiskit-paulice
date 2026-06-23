@@ -137,6 +137,7 @@ _inlined_apis = [
     ("qiskit_paulice.noise_models", "LayeredGateNoise"),
     ("qiskit_paulice.noise_models", "GateWiseNoise"),
     ("qiskit_paulice.layout", "get_low_overhead_ancillas"),
+    ("qiskit_paulice.layout", "get_check_qubits"),
 ]
 
 redirects = {
