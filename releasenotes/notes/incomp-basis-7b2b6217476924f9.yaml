@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Fixed issue where input circuits defined on an incomplete Clifford basis gate set would fail to transform back into their original basis after check picking. Now, instead of failing, the checked circuit will be returned in the internal Clifford basis.

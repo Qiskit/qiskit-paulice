@@ -1,0 +1,4 @@
+---
+fixes:
+  - |
+    Fixed issues with circuits containing wires with 2-qubit-depth of 1.
