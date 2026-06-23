@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 from typing import Literal, TypeGuard
 
@@ -22,6 +23,7 @@ from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister
 from qiskit.circuit.equivalence_library import SessionEquivalenceLibrary as _SEL
 from qiskit.quantum_info import Pauli
 from qiskit.transpiler import PassManager
+from qiskit.transpiler.exceptions import TranspilerError
 from qiskit.transpiler.passes import BasisTranslator, UnrollCustomDefinitions
 
 from ._internal import Metric as _Metric
@@ -266,37 +268,48 @@ def add_pauli_checks(
         verbose=False,
     )
 
+    # The picker may not place a check on every requested target (e.g. a wire
+    # too shallow to support one); `committed_targets` lists the targets that
+    # actually got a check, in commit order. Checks occupy ancilla slots in that
+    # same order, so the committed ancillas are the first `m` slots after the
+    # payload -- recompute `check_qubits` from that rather than trusting the
+    # station's formula, which assumes every target committed.
+    committed = result.committed_targets
+    if committed is None:
+        committed = list(picker_targets)
+    n_payload_v = virtual_circuit.num_qubits
+    m = len(committed)
+    result.check_qubits = list(range(n_payload_v, n_payload_v + m))
+
     if is_isa:
         # Lift each picker variant onto the input ISA's physical-qubit layout.
+        # Each committed check keeps the ancilla the caller paired with its
+        # target, reordered into commit order.
         anc_list = list(ancilla_qubits)  # type: ignore[arg-type]
+        committed_anc = [anc_list[picker_targets.index(t)] for t in committed]
         result.circuits = [
             _lift_to_isa_circuit(
                 variant=v,
                 qregs=qregs,
                 cregs=cregs,
                 measurement_info=measurement_info,
-                num_payload_virtual=len(payload_phys),
+                num_payload_virtual=n_payload_v,
                 num_active_checks=k,
                 payload_phys=payload_phys,
-                ancilla_qubits=anc_list,
+                ancilla_qubits=committed_anc,
                 check_creg_name=check_creg_name,
             )
             for k, v in enumerate(result.circuits)
         ]
-        # `virtual_zs` and `check_qubits` from the picker reference virtual
-        # indices into the small payload-only circuit. Remap them to the
-        # physical indices used by the lifted output so post-selection reads
-        # the right measurement bits.
-        n_payload_v = len(payload_phys)
+        # `virtual_zs` and `check_qubits` reference virtual indices into the
+        # small payload-only circuit. Remap them to the physical indices used by
+        # the lifted output so post-selection reads the right measurement bits.
         result.virtual_zs = [
-            [payload_phys[q] if q < n_payload_v else anc_list[q - n_payload_v] for q in vzs]
+            [payload_phys[q] if q < n_payload_v else committed_anc[q - n_payload_v] for q in vzs]
             for vzs in result.virtual_zs
         ]
-        result.check_qubits = [
-            anc_list[q - n_payload_v] if q >= n_payload_v else payload_phys[q]
-            for q in result.check_qubits
-        ]
-        target_qubits_out = [payload_phys[t] for t in picker_targets]
+        result.check_qubits = list(committed_anc)
+        target_qubits_out = [payload_phys[t] for t in committed]
     else:
         # Restore original measurements and add check measurements (non-ISA path).
         _restore_measurements_and_cregs(
@@ -309,7 +322,7 @@ def add_pauli_checks(
             check_creg_name=check_creg_name,
             check_qreg_name=check_qreg_name,
         )
-        target_qubits_out = list(target_qubits)
+        target_qubits_out = list(committed)
 
     # Re-express every output in the input circuit's basis. The picker emits its
     # internal Clifford basis ({h, cx, cz, s, sx, sdg, sxdg}); translate back so
@@ -379,7 +392,19 @@ def _translate_to_basis(circuit: QuantumCircuit, basis_gates: list[str]) -> Quan
             BasisTranslator(_SEL, basis_gates),
         ]
     )
-    return pm.run(circuit)
+    try:
+        return pm.run(circuit)
+    except TranspilerError:
+        # The input basis can't express the checks the picker inserted -- it is
+        # not universal (e.g. {h, cx}, with no phase gate, as for a virtual GHZ).
+        # Leave the circuit in the package's internal Clifford basis.
+        warnings.warn(
+            f"Could not re-express the output in the input gate set {sorted(basis_gates)}; "
+            "it is not universal for the inserted checks. Returning the circuit in the "
+            "internal Clifford basis instead.",
+            stacklevel=2,
+        )
+        return circuit
 
 
 def _strip_measurements_cregs_barriers(circuit: QuantumCircuit):

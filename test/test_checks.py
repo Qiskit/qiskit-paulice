@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import unittest
+import warnings
 
 from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister, transpile
 from qiskit.quantum_info import PauliLindbladMap
@@ -23,6 +24,7 @@ from qiskit_paulice import CheckedCircuit
 from qiskit_paulice.checks import (
     _lift_to_isa_circuit,
     _remove_inactive_qubits,
+    _translate_to_basis,
     add_pauli_checks,
 )
 from qiskit_paulice.noise_models import NoiseModel
@@ -41,6 +43,16 @@ def _clifford(nq: int = 3, layers: int = 2) -> QuantumCircuit:
         qc.cx(1, 2)
         qc.s(0)
         qc.s(2)
+    qc.measure_all()
+    return qc
+
+
+def _ghz(n: int) -> QuantumCircuit:
+    """An n-qubit GHZ circuit (shallow per-qubit wires) with terminal measurements."""
+    qc = QuantumCircuit(n)
+    qc.h(0)
+    for i in range(n - 1):
+        qc.cx(i, i + 1)
     qc.measure_all()
     return qc
 
@@ -107,6 +119,64 @@ class TestAddPauliChecksOutputBasis(unittest.TestCase):
         )
         for variant in result:
             self.assertLessEqual(_gate_names(variant.circuit), basis)
+
+    def test_non_universal_input_basis_falls_back(self):
+        # {h, cx} is not universal (no phase gate), so the picker's Clifford
+        # output (e.g. an sx) cannot be re-expressed in it. Rather than raising a
+        # TranspilerError, the circuit is returned untouched with a warning.
+        qc = QuantumCircuit(1)
+        qc.sx(0)
+        with self.assertWarns(UserWarning):
+            out = _translate_to_basis(qc, ["h", "cx"])
+        self.assertEqual(_gate_names(out), {"sx"})
+
+
+class TestAddPauliChecksShallowWires(unittest.TestCase):
+    """GHZ circuits stress the picker: per-qubit wires are very shallow."""
+
+    def test_ghz_skips_unprotectable_targets(self):
+        # GHZ endpoint wires are too shallow to host a check, so those targets
+        # are skipped instead of crashing the picker (regression: the windowed
+        # search used to raise "min() arg is an empty sequence"). Interior qubits
+        # are checkable. The reported targets/checks reflect only what committed.
+        n = 6
+        with warnings.catch_warnings():
+            # GHZ's {h, cx} basis is non-universal; the basis-match step may warn.
+            warnings.simplefilter("ignore", UserWarning)
+            result = add_pauli_checks(_ghz(n), list(range(n)), _DEFAULT_NOISE, seed=0)
+        final = result[-1]
+        self.assertEqual(final.target_qubits, tuple(range(1, n - 1)))  # endpoints dropped
+        self.assertEqual(len(final.check_qubits), len(final.target_qubits))
+        self.assertEqual(len(final.check_support), len(final.target_qubits))
+        _assert_variant_progression(self, result, expected_targets=list(range(1, n - 1)))
+
+    def test_ghz_endpoint_only_target_yields_no_checks(self):
+        # A lone endpoint target can't be checked: return just the bare circuit.
+        result = add_pauli_checks(_ghz(4), [0], _DEFAULT_NOISE, seed=0)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].target_qubits, ())
+        self.assertEqual(result[0].check_qubits, ())
+
+    def test_ghz_checks_are_valid_noiselessly(self):
+        # Correctness: with no noise every shot must pass all checks (syndrome 0)
+        # and the payload must stay a clean GHZ distribution -- this validates the
+        # check-qubit / syndrome mapping for the skipped-target case.
+        from qiskit_aer import AerSimulator
+
+        n = 5
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            final = add_pauli_checks(_ghz(n), list(range(n)), _DEFAULT_NOISE, seed=0)[-1]
+        counts = (
+            AerSimulator(method="stabilizer")
+            .run(final.circuit, shots=2000, seed_simulator=1)
+            .result()
+            .get_counts()
+        )
+        postselect = final.get_postselection_method()
+        self.assertTrue(all(not postselect(bitstring).any() for bitstring in counts))
+        payloads = {bitstring.split()[-1] for bitstring in counts}
+        self.assertLessEqual(payloads, {"0" * n, "1" * n})
 
 
 class TestAddPauliChecksBasic(unittest.TestCase):

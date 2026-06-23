@@ -102,6 +102,7 @@ def windowed_check_picker(
     
     circuits = [check_picker.get_circuit()]
     costs = [check_picker.get_current_energy()]
+    committed_targets = []
     for idx, target in enumerate(targets):
 
         if verbose:
@@ -114,10 +115,18 @@ def windowed_check_picker(
         candidatechecks = _get_good_checks_randomized(
             support, max_width, check_picker, ntries, paulis
         )
+        if not candidatechecks:
+            # No valid check exists for this target (e.g. a wire too shallow to
+            # support one, as on GHZ endpoints). Skip it rather than crashing on
+            # an empty ``min``; the target simply gets no check.
+            if verbose:
+                print(f"[WIN] No valid check found for target {target}; skipping.")
+            continue
         best_check = min(candidatechecks, key=lambda x: x[-1])
         if verbose:
             print(f"[WIN] Best check has score: {best_check[-1]}.")
         check_picker = best_check[0]
+        committed_targets.append(target)
         circuits.append(check_picker.get_circuit())
         costs.append(check_picker.get_current_energy())
-    return (circuits, *check_picker.get_check_data(), costs)
+    return (circuits, *check_picker.get_check_data(), costs, committed_targets)

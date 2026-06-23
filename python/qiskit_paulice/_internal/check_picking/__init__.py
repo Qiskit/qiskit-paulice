@@ -42,16 +42,24 @@ class CheckedCircuits:
             metric after committing the first ``k`` checks. Length is
             ``len(check_qubits) + 1``. ``None`` if the picker method did not
             report it.
+        committed_targets: The target qubits that actually received a check, in
+            commit order. May be a subsequence of the requested targets when
+            some have no valid check (e.g. too-shallow wires). ``None`` if the
+            picker method did not report it (then all targets are assumed
+            committed).
 
     This class is internal; the public-facing ``CheckedCircuit`` (singular)
     in ``qiskit_paulice.checked_circuit`` is what users see.
     """
 
-    def __init__(self, circuits, check_qubits, virtual_zs, costs=None):
+    def __init__(self, circuits, check_qubits, virtual_zs, costs=None, committed_targets=None):
         self.circuits = circuits
         self.check_qubits = check_qubits
         self.virtual_zs = virtual_zs
         self.costs: list[float] | None = list(costs) if costs is not None else None
+        self.committed_targets: list[int] | None = (
+            list(committed_targets) if committed_targets is not None else None
+        )
 
 
 def pick_checks(
@@ -105,11 +113,13 @@ def pick_checks(
     if verbose:
         print("[CHECK PICKING] Initial metric value:", check_picker.get_current_energy())
     out = method(check_picker, targets, verbose=verbose, seed=seed, **kwargs)
-    # Methods now return `(circuits, check_qubits, virtual_zs, costs)`; tolerate the
-    # older 3-tuple form for backward compatibility.
-    if len(out) == 4:
+    # Methods now return `(circuits, check_qubits, virtual_zs, costs, committed_targets)`;
+    # tolerate the older 4- and 3-tuple forms for backward compatibility.
+    costs = committed_targets = None
+    if len(out) == 5:
+        circuits, check_qubits, virtual_zs, costs, committed_targets = out
+    elif len(out) == 4:
         circuits, check_qubits, virtual_zs, costs = out
     else:
         circuits, check_qubits, virtual_zs = out
-        costs = None
-    return CheckedCircuits(circuits, check_qubits, virtual_zs, costs)
+    return CheckedCircuits(circuits, check_qubits, virtual_zs, costs, committed_targets)

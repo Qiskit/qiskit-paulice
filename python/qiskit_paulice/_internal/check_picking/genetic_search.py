@@ -60,6 +60,7 @@ def genetic_algorithm(
     
     circuits = [check_picker.get_circuit()]
     costs = [check_picker.get_current_energy()]
+    committed_targets = []
     for idx, qubit in enumerate(targets):
         if verbose:
             print(
@@ -72,9 +73,10 @@ def genetic_algorithm(
             check_picker, support, verbose, p_mutation, n_stagnant, pop_size
         )
 
+        committed_targets.append(qubit)
         circuits.append(check_picker.get_circuit())
         costs.append(check_picker.get_current_energy())
-    return (circuits, *check_picker.get_check_data(), costs)
+    return (circuits, *check_picker.get_check_data(), costs, committed_targets)
 
 
 def _single_round_genetic(check_picker, support, verbose, p_mutation, n_stagnant, pop_size):
@@ -159,6 +161,7 @@ def windowed_genetic_algorithm(
 
     circuits = [check_picker.get_circuit()]
     costs = [check_picker.get_current_energy()]
+    committed_targets = []
     for idx, qubit in enumerate(targets):
         if verbose:
             print(
@@ -181,11 +184,17 @@ def windowed_genetic_algorithm(
                 )
             picked.append(new_check_picker)
 
+        if not picked:
+            # Support too shallow to form any window; skip rather than crash on min([]).
+            if verbose:
+                print(f"[WGA] No valid check found for target {qubit}; skipping.")
+            continue
         best_check = min(picked, key=lambda x: x.get_current_energy())
         if verbose:
             print(f"[WGA] Best window gave score: {best_check.get_current_energy()}.")
         check_picker = best_check
 
+        committed_targets.append(qubit)
         circuits.append(check_picker.get_circuit())
         costs.append(check_picker.get_current_energy())
-    return (circuits, *check_picker.get_check_data(), costs)
+    return (circuits, *check_picker.get_check_data(), costs, committed_targets)
