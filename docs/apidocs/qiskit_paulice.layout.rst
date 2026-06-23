@@ -10,3 +10,4 @@ Layout (:mod:`qiskit_paulice.layout`)
 .. currentmodule:: qiskit_paulice.layout
 
 .. autofunction:: get_low_overhead_ancillas
+.. autofunction:: get_check_qubits
