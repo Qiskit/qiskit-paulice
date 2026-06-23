@@ -27,7 +27,7 @@ def get_check_qubits(
 
     Generate equal-length lists of target and ancilla qubits, such that
     target qubit ``i`` is adjacent to ancilla qubit ``i``in the coupling map.
-    Target qubits and their neighbor may appear at most one time in their
+    Target and ancilla qubits may appear at most one time in their
     respective lists.
 
     Args:
