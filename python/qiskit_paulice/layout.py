@@ -16,30 +16,64 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from qiskit.providers import BackendV2
 from qiskit.transpiler import CouplingMap
+
+
+def get_check_qubits(
+    backend: BackendV2 | CouplingMap, layout: Sequence[int]
+) -> tuple[list[int], list[int]]:
+    """Pair qubits in ``layout`` with neighboring ancillas.
+
+    Generate equal-length lists of target and ancilla qubits, such that
+    target qubit ``i`` is adjacent to ancilla qubit ``i``in the coupling map.
+    Target and ancilla qubits may appear at most one time in their
+    respective lists.
+
+    Args:
+        backend: The target backend, or a :class:`~qiskit.transpiler.CouplingMap`
+            describing its connectivity.
+        layout: A list of physical qubit indices.
+
+    Returns:
+        A length-2 tuple of lists, ``(target_qubits, ancilla_qubits)``. ``target_qubits[i]``
+        pairs with ``ancilla_qubits[i]``.
+    """
+    coupling_map = getattr(backend, "coupling_map", backend)
+    ancilla_to_payload = get_low_overhead_ancillas(coupling_map, layout)
+
+    # Give each ancilla its first not-yet-claimed neighbor, so every target and
+    # ancilla is used at most once. Sorting makes the choice deterministic.
+    matched: dict[int, int] = {}  # target qubit -> ancilla
+    for ancilla in sorted(ancilla_to_payload):
+        for target in sorted(ancilla_to_payload[ancilla]):
+            if target not in matched:
+                matched[target] = ancilla
+                break
+
+    targets = sorted(matched)
+    return [int(t) for t in targets], [int(matched[t]) for t in targets]
 
 
 def get_low_overhead_ancillas(
     coupling_map: CouplingMap, layout: Sequence[int]
 ) -> dict[int, list[int]]:
-    """Find ancilla qubits adjacent to the layout qubits in the coupling graph.
-
-    This function identifies physical qubits that are not in the layout but are
-    connected to one or more layout qubits via the coupling map.
+    """Create a mapping from ancillas to ``layout`` qubits to which they are adjacent.
 
     Args:
-        coupling_map: A qubit connectivity graph
-        layout: Physical qubit indices for which to find adjacent ancillas
+        coupling_map: A qubit connectivity graph.
+        layout: Physical qubit indices occupied by the payload circuit.
 
     Returns:
-        A dictionary mapping ancilla qubit indices to lists of layout qubit indices
-        to which it is adjacent.
+        A mapping from ancilla indices to the list of ``layout`` qubits to which it is
+        adjacent. An ancilla bordering several layout qubits maps to all of them, and
+        a layout qubit bordering several ancillas appears in each of their lists.
     """
     layout_set = set(layout)
     ancilla_targets: dict[int, list[int]] = {}
 
     for qubit in layout:
-        for neighbor in coupling_map.neighbors(qubit):
+        for neighbor in sorted(coupling_map.neighbors(qubit)):
             if neighbor not in layout_set:
                 if neighbor not in ancilla_targets:
                     ancilla_targets[neighbor] = []
