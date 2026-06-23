@@ -114,12 +114,6 @@ impl CheckPicker {
             .collect()
     }
 
-    /// Estimates the post-selection rate and logical error rate via Monte-Carlo simulation
-    /// - nshots: number of shots to use in the estimation
-    pub fn estimate_psr_ler(&self, nshots: usize) -> (f64, f64) {
-        self.check_evaluator.as_ref().unwrap().get_psr_ler(nshots)
-    }
-
     /// Sets all the data required to evaluate check's performances
     /// - Noise models: a list of noise models
     /// - Metric: the metric used to evaluate the performance of the check

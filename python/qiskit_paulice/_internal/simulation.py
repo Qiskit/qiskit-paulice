@@ -42,27 +42,3 @@ def get_gamma(
         virtual_zs,
     )
     return check_picker.get_current_energy()
-
-
-def get_psr_ler(
-    circuit: QuantumCircuit,
-    noise_models: None | list[NoiseModel] = None,
-    stabilizers: None | list[str] | list[Pauli] | str = None,
-    measured_qubits: None | list[int] | str = None,
-    check_qubits: None | list[int] = None,
-    virtual_zs: None | list[list[int]] = None,
-    nshots: None | int = 1000,
-):
-    """Use Monte-Carlo simulation to estimate the post-selection rate and logical error rate
-    """
-    check_picker = build_check_picker(
-        circuit,
-        Metric.gamma(),
-        noise_models,
-        stabilizers,
-        measured_qubits,
-        check_qubits,
-        virtual_zs,
-    )
-    psr, ler = check_picker.estimate_psr_ler(nshots)
-    return psr, ler
