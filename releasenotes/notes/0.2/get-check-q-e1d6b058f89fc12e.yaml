@@ -1,4 +1,4 @@
 ---
 features:
   - |
-    Added new :func:`qiskit_paulice.layout.get_check_qubits` function, which provides a straightforward way to find target/ancilla qubit pairs, which can be used to implement spacetime Pauli checks.
+    Added new :func:`qiskit_paulice.layout.get_check_qubits` function, which provides a straightforward way to find target/ancilla qubit pairs.
