@@ -146,11 +146,6 @@ enable = [
 
 [tool.pytest.ini_options]
 testpaths = ["./qiskit_paulice/", "./test/"]
-filterwarnings = [
-    # Third-party deprecation from qiskit-ibm-runtime's transpiler plugin, which
-    # qiskit auto-discovers via stevedore whenever a preset pass manager runs.
-    "ignore:.*IBMFractionalTranslationPlugin is deprecated.*:DeprecationWarning",
-]
 
 [tool.ruff]
 line-length = 100
