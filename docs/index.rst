@@ -29,7 +29,7 @@ A simple guide to help you get started quickly with this package is available in
 Use case examples
 -----------------
 
-This technique has been used to improve the fidelity of samples from Clifford-dominated circuits up to 50 qubits and 2450 entangling gates `[1] <https://arxiv.org/abs/2504.15725>`_.
+This technique has been used to improve the fidelity of samples from Clifford-dominated circuits up to 50 qubits and 2450 entangling gates [1]_.
 
 Technical discussion
 --------------------
@@ -119,7 +119,7 @@ By participating, you are expected to uphold Qiskit's `code of conduct <https://
 Citing this package
 -------------------
 
-If you use this package in your research, use the `CITATION.bib <https://github.com/Qiskit/qiskit-paulice/blob/main/CITATION.bib>` file in this project's repository to cite the appropriate reference(s).
+If you use this package in your research, use the `CITATION.bib <https://github.com/Qiskit/qiskit-paulice/blob/main/CITATION.bib>`_ file in this project's repository to cite the appropriate reference(s).
 
 License
 -------
