@@ -6,7 +6,6 @@
   [![Python](https://img.shields.io/pypi/pyversions/qiskit-paulice?label=Python&logo=python)](https://www.python.org/)
   [![Qiskit](https://img.shields.io/badge/Qiskit%20-%20%3E%3D2.1%20-%20%236133BD?logo=Qiskit)](https://github.com/Qiskit/qiskit)
 <br />
-  [![Docs (stable)](https://img.shields.io/badge/%F0%9F%93%84%20Docs-stable-blue.svg)](https://quantum.cloud.ibm.com/docs/addons/qiskit-addon-paulice)
   [![License](https://img.shields.io/github/license/Qiskit/qiskit-paulice?label=License)](LICENSE.txt)
   [![Downloads](https://img.shields.io/pypi/dm/qiskit-paulice.svg?label=Downloads)](https://pypi.org/project/qiskit-paulice/)
   [![Tests](https://github.com/Qiskit/qiskit-paulice/actions/workflows/test_latest_versions.yml/badge.svg)](https://github.com/Qiskit/qiskit-paulice/actions/workflows/test_latest_versions.yml)
