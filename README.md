@@ -6,7 +6,7 @@
   [![Python](https://img.shields.io/pypi/pyversions/qiskit-paulice?label=Python&logo=python)](https://www.python.org/)
   [![Qiskit](https://img.shields.io/badge/Qiskit%20-%20%3E%3D2.1%20-%20%236133BD?logo=Qiskit)](https://github.com/Qiskit/qiskit)
 <br />
-  [![Docs (stable)](https://img.shields.io/badge/%F0%9F%93%84%20Docs-stable-blue.svg)](https://qiskit.github.io/qiskit-paulice/)
+  [![Docs (stable)](https://img.shields.io/badge/%F0%9F%93%84%20Docs-stable-blue.svg)](https://quantum.cloud.ibm.com/docs/addons/qiskit-addon-paulice)
   [![License](https://img.shields.io/github/license/Qiskit/qiskit-paulice?label=License)](LICENSE.txt)
   [![Downloads](https://img.shields.io/pypi/dm/qiskit-paulice.svg?label=Downloads)](https://pypi.org/project/qiskit-paulice/)
   [![Tests](https://github.com/Qiskit/qiskit-paulice/actions/workflows/test_latest_versions.yml/badge.svg)](https://github.com/Qiskit/qiskit-paulice/actions/workflows/test_latest_versions.yml)
@@ -161,7 +161,7 @@ If you use this package in your research, use the [CITATION.bib](CITATION.bib) f
 We follow [semantic versioning](https://semver.org/). We may occasionally make breaking changes in
 order to improve the user experience. When possible, we will keep old interfaces and mark them as
 deprecated, as long as they can co-exist with the new ones. Each substantial improvement, breaking
-change, or deprecation will be documented in the [release notes](https://qiskit.github.io/qiskit-paulice/release-notes.html).
+change, or deprecation will be documented in the [release notes](https://quantum.cloud.ibm.com/docs/api/qiskit-addon-paulice/release-notes).
 
 ----------------------------------------------------------------------------------------------------
 
