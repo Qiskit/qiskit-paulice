@@ -157,6 +157,12 @@ References
 
 .. toctree::
    :hidden:
+   :caption: Learning resources
+
+   The research behind Paulice <https://www.youtube.com/watch?v=3Wpeo3Lv7Pw>
+
+.. toctree::
+   :hidden:
    :caption: API reference
 
    Python API reference <https://quantum.cloud.ibm.com/docs/en/api/qiskit-paulice>
