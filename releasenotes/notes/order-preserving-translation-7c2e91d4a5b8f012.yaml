@@ -1,0 +1,5 @@
+---
+fixes:
+  - |
+    :func:`qiskit_paulice.add_pauli_checks` now translates its output to the input circuit's gate
+    set gate-by-gate, preserving gate order and the circuit's layer structure.
