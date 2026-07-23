@@ -1,0 +1,19 @@
+---
+features:
+  - |
+    Added :meth:`qiskit_paulice.CheckedCircuit.compute_local_scales`, which masks each generator
+    of a learned Pauli-Lindblad noise model by whether the circuit's checks detect it -- the
+    postselected noise channel, ready to pass as ``local_scales`` to ``samplomatic`` so error
+    mitigation only pays for what post-selection cannot remove.
+  - |
+    Added :meth:`qiskit_paulice.CheckedCircuit.box` (with
+    :attr:`~qiskit_paulice.CheckedCircuit.boxed_circuit` and
+    :meth:`~qiskit_paulice.CheckedCircuit.boxing_costs`), which groups the checked circuit into
+    the annotated boxes ``samplomatic`` uses for twirling, noise learning, and sampling;
+    ``check_layers="isolated"`` keeps the number of unique layers to learn flat in circuit depth.
+  - |
+    Added :meth:`qiskit_paulice.CheckedCircuit.get_syndrome_flips`, the per-randomization
+    syndrome correction required to post-select twirled circuits correctly.
+upgrade:
+  - |
+    ``qiskit-paulice`` now requires ``samplomatic>=0.20.0``.
