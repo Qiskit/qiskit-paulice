@@ -378,11 +378,15 @@ def _input_basis_gates(circuit: QuantumCircuit) -> list[str]:
 
 
 def _translate_to_basis(circuit: QuantumCircuit, basis_gates: list[str]) -> QuantumCircuit:
-    """Re-express ``circuit`` in ``basis_gates`` via basis translation only.
+    """Re-express ``circuit`` in ``basis_gates`` while **preserving gate order**.
 
-    No coupling map or target is supplied, so this performs a local gate-set
-    translation without any routing or relayout -- qubit placement (and any ISA
-    layout) is preserved. Registers and measurements pass through unchanged.
+    Running ``BasisTranslator`` on the whole circuit round-trips through a DAG and
+    re-emits gates in a topological order that reshuffles independent (parallel)
+    gates -- which would smear the entangling-layer structure the check picker
+    carefully preserved. Instead each instruction is translated on its own and
+    appended in the circuit's original order, so that structure survives. No
+    coupling map or target is supplied, so there is no routing or relayout; qubit
+    placement (and any ISA layout) is preserved, and measurements pass through.
     """
     pm = PassManager(
         [
@@ -390,19 +394,40 @@ def _translate_to_basis(circuit: QuantumCircuit, basis_gates: list[str]) -> Quan
             BasisTranslator(_SEL, basis_gates),
         ]
     )
-    try:
-        return pm.run(circuit)
-    except TranspilerError:
-        # The input basis can't express the checks the picker inserted -- it is
-        # not universal (e.g. {h, cx}, with no phase gate, as for a virtual GHZ).
-        # Leave the circuit in the package's internal Clifford basis.
-        warnings.warn(
-            f"Could not re-express the output in the input gate set {sorted(basis_gates)}; "
-            "it is not universal for the inserted checks. Returning the circuit in the "
-            "internal Clifford basis instead.",
-            stacklevel=2,
-        )
-        return circuit
+    keep = set(basis_gates) | {"measure", "barrier"}
+    # Translate each unique gate once (Clifford gates carry no parameters, so the name
+    # is a complete key); ``None`` marks a gate the basis cannot express.
+    translated_block: dict[str, QuantumCircuit | None] = {}
+    out = circuit.copy_empty_like()
+    for instruction in circuit.data:
+        op = instruction.operation
+        if op.name in keep:
+            out.append(instruction)
+            continue
+        if op.name not in translated_block:
+            block = QuantumCircuit(op.num_qubits)
+            block.append(op, range(op.num_qubits))
+            try:
+                translated_block[op.name] = pm.run(block)
+            except TranspilerError:
+                translated_block[op.name] = None
+        block = translated_block[op.name]
+        if block is None:
+            # The input basis can't express the checks the picker inserted -- it is not
+            # universal (e.g. {h, cx}, with no phase gate, as for a virtual GHZ). Leave
+            # the circuit in the package's internal Clifford basis (already order-preserved).
+            warnings.warn(
+                f"Could not re-express the output in the input gate set {sorted(basis_gates)}; "
+                "it is not universal for the inserted checks. Returning the circuit in the "
+                "internal Clifford basis instead.",
+                stacklevel=2,
+            )
+            return circuit
+        for sub in block.data:
+            out.append(
+                sub.operation, [instruction.qubits[block.find_bit(q).index] for q in sub.qubits]
+            )
+    return out
 
 
 def _strip_measurements_cregs_barriers(circuit: QuantumCircuit):
