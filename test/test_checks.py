@@ -130,6 +130,38 @@ class TestAddPauliChecksOutputBasis(unittest.TestCase):
             out = _translate_to_basis(qc, ["h", "cx"])
         self.assertEqual(_gate_names(out), {"sx"})
 
+    def test_translation_preserves_gate_order(self):
+        # Whole-circuit BasisTranslator round-trips through a DAG and re-emits
+        # independent gates in topological order, which groups an interleaved
+        # brickwork [(0,1), (2,3), (0,1), (2,3)] into [(0,1), (0,1), (2,3),
+        # (2,3)] and smears the entangling-layer structure the picker preserved.
+        # Translation must keep every payload gate in its original position.
+        num_qubits = 4
+        qc = QuantumCircuit(num_qubits)
+        qc.h(range(num_qubits))
+        for _ in range(3):
+            qc.cx(0, 1)
+            qc.cx(2, 3)
+            for qubit in range(num_qubits):
+                qc.s(qubit)
+        qc.measure_all()
+        checked = add_pauli_checks(qc, [0], _DEFAULT_NOISE, seed=7)[-1]
+
+        def two_qubit_pairs(circuit, payload_only=False):
+            pairs = []
+            for instruction in circuit.data:
+                if len(instruction.qubits) != 2:
+                    continue
+                pair = tuple(sorted(circuit.find_bit(q).index for q in instruction.qubits))
+                if payload_only and max(pair) >= num_qubits:
+                    continue
+                pairs.append(pair)
+            return pairs
+
+        self.assertEqual(
+            two_qubit_pairs(checked.circuit, payload_only=True), two_qubit_pairs(qc)
+        )
+
 
 class TestAddPauliChecksShallowWires(unittest.TestCase):
     """GHZ circuits stress the picker: per-qubit wires are very shallow."""
