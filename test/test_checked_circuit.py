@@ -15,10 +15,20 @@
 from __future__ import annotations
 
 import unittest
+import warnings
+from collections import Counter
 
 import numpy as np
+import samplomatic
 from qiskit import QuantumCircuit
-from qiskit_paulice import CheckedCircuit, UncoveredPauli
+from qiskit.quantum_info import Clifford
+from qiskit.transpiler.passes import RemoveBarriers
+from qiskit_paulice import CheckedCircuit, UncoveredPauli, add_pauli_checks
+from qiskit_paulice.checked_circuit import _BOXING_DEFAULTS
+from qiskit_paulice.noise_models import NoiseModel
+from samplomatic.annotations import InjectNoise
+from samplomatic.transpiler import generate_boxing_pass_manager
+from samplomatic.utils import get_annotation
 
 
 def _bell_with_measure() -> QuantumCircuit:
@@ -28,6 +38,66 @@ def _bell_with_measure() -> QuantumCircuit:
     qc.measure(0, 0)
     qc.measure(1, 1)
     return qc
+
+
+def _bare_circuit(nq=4, depth=4, barriers=False):
+    """A brickwork Clifford payload, optionally with its layer boundaries marked."""
+    qc = QuantumCircuit(nq)
+    qc.h(range(nq))
+    for d in range(depth):
+        for i in range(d % 2, nq - 1, 2):
+            qc.cz(i, i + 1)
+        for q in range(nq):
+            qc.sx(q)
+        if barriers:
+            qc.barrier()
+    qc.measure_all()
+    return qc
+
+
+def _brickwork_layers(nq):
+    """The two unique entangling layers of the brickwork payload."""
+    return [{(i, i + 1) for i in range(0, nq - 1, 2)}, {(i, i + 1) for i in range(1, nq - 1, 2)}]
+
+
+def _gate_counts(circuit):
+    """Gate tallies, ignoring the barriers that mark layer boundaries."""
+    return Counter(inst.operation.name for inst in circuit.data if inst.operation.name != "barrier")
+
+
+def _box_edges(instruction, boxed):
+    """The entangled qubit pairs inside one box."""
+    body = instruction.operation.blocks[0]
+    qmap = [boxed.find_bit(q).index for q in instruction.qubits]
+    return [
+        tuple(sorted(qmap[body.find_bit(q).index] for q in sub.qubits))
+        for sub in body.data
+        if len(sub.qubits) == 2
+    ]
+
+
+def _box_edge_sets(boxed):
+    """The set of entangled qubit pairs inside each box, in circuit order."""
+    out = []
+    for instruction in boxed.data:
+        if instruction.operation.name != "box":
+            continue
+        edges = frozenset(_box_edges(instruction, boxed))
+        if edges:
+            out.append(edges)
+    return out
+
+
+def _checked_example(nq=4, depth=4, seed=1):
+    """A ``CheckedCircuit`` and its boxed form."""
+    qc = _bare_circuit(nq, depth)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        checked = add_pauli_checks(
+            qc, list(range(nq)), NoiseModel(gate_noise=1e-3, readout_noise=1e-2), seed=seed
+        )[-1]
+        boxed = checked.box()
+    return checked, boxed
 
 
 class TestCheckedCircuit(unittest.TestCase):
@@ -135,3 +205,150 @@ class TestCheckedCircuit(unittest.TestCase):
         f = cc.get_postselection_method()
         np.testing.assert_array_equal(f("10"), np.array([1]))
         np.testing.assert_array_equal(f("11"), np.array([0]))
+
+
+class TestBox(unittest.TestCase):
+    """Tests for ``CheckedCircuit.box``."""
+
+    def test_boxes_the_executed_circuit(self):
+        """Every entangling gate of the checked circuit -- check gates included -- lands in a box."""
+        checked, boxed = _checked_example()
+        ancillas = set(checked.check_qubits)
+        circuit_edges = [
+            tuple(sorted(checked.circuit.find_bit(q).index for q in inst.qubits))
+            for inst in checked.circuit.data
+            if len(inst.qubits) == 2
+        ]
+        boxed_edges = [
+            edge
+            for instruction in boxed.data
+            if instruction.operation.name == "box"
+            for edge in _box_edges(instruction, boxed)
+        ]
+        self.assertEqual(sorted(boxed_edges), sorted(circuit_edges))
+        # the check gates are really in there
+        self.assertTrue(any(set(e) & ancillas for e in boxed_edges))
+
+    def test_rejects_resets(self):
+        """Resets alter the Heisenberg evolution and are rejected until supported."""
+        checked, _ = _checked_example()
+        checked.circuit.reset(0)
+        with self.assertRaises(ValueError):
+            checked.box()
+
+
+class TestIsolatedCheckLayers(unittest.TestCase):
+    """Tests for the isolated check layers ``CheckedCircuit.box`` produces."""
+
+    def setUp(self):
+        self.checked, self.isolated = _checked_example(nq=6, depth=8, seed=4)
+
+    def test_same_circuit(self):
+        """Isolating check gates only regroups them: same gates, same unitary."""
+        stripped = self.checked._stratify(None)
+        self.assertEqual(_gate_counts(self.checked.circuit), _gate_counts(stripped))
+        original = RemoveBarriers()(self.checked.circuit.remove_final_measurements(inplace=False))
+        restratified = RemoveBarriers()(stripped.remove_final_measurements(inplace=False))
+        self.assertEqual(Clifford(original), Clifford(restratified))
+
+    def test_each_check_gate_boxed_alone(self):
+        """A check box is exactly its one gate: a single edge on a two-qubit box."""
+        ancillas = set(self.checked.check_qubits)
+        saw_check_box = False
+        for instruction in self.isolated.data:
+            if instruction.operation.name != "box":
+                continue
+            edges = _box_edges(instruction, self.isolated)
+            if any(set(e) & ancillas for e in edges):
+                self.assertEqual(len(edges), 1)
+                self.assertEqual(len(instruction.qubits), 2)
+                saw_check_box = True
+        self.assertTrue(saw_check_box)
+
+    def test_unique_layers_is_payload_plus_one_per_check(self):
+        """The whole point: two brickwork payload layers plus one unique layer per check."""
+        ancillas = set(self.checked.check_qubits)
+        payload, check = set(), set()
+        for edges in _box_edge_sets(self.isolated):
+            (check if any(set(e) & ancillas for e in edges) else payload).add(edges)
+        self.assertEqual(len(payload), 2)
+        self.assertEqual(len(check), len(self.checked.check_support))
+        # ... and every layer recurs rather than proliferating
+        self.assertLess(len(check) + len(payload), sum(1 for _ in _box_edge_sets(self.isolated)))
+
+    def test_payload_layers_split_what_packing_would_merge(self):
+        """The palette is authoritative: gates that packing would share a stratum get split."""
+        qc = QuantumCircuit(4)
+        qc.cz(0, 1)
+        qc.cz(2, 3)
+        qc.measure_all()
+        checked = CheckedCircuit(circuit=qc)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            packed = checked.box()
+            # the reversed edge also checks pair normalization
+            split = checked.box(payload_layers=[{(1, 0)}, {(2, 3)}])
+        self.assertEqual(len(set(_box_edge_sets(packed))), 1)
+        self.assertEqual(len(set(_box_edge_sets(split))), 2)
+
+    def test_rejects_foreign_payload_layers(self):
+        """Layers that do not cover the payload's edges are an error, not a mislabelling."""
+        with self.assertRaises(ValueError):
+            self.checked.box(payload_layers=_brickwork_layers(4))
+
+    def test_rejects_ambiguous_payload_layers(self):
+        """An edge sitting in two unique layers has no well-defined boxing."""
+        layers = _brickwork_layers(6)
+        layers[1].add((0, 1))
+        with self.assertRaises(ValueError):
+            self.checked.box(payload_layers=layers)
+
+    def test_builds_a_samplex(self):
+        """The isolated boxing is a working samplomatic circuit."""
+        samplomatic.build(self.isolated)
+
+
+class TestBareModelReuse(unittest.TestCase):
+    """A model learned once on the bare circuit binds to the checked circuit's payload boxes."""
+
+    def setUp(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            self.bare = _bare_circuit(nq=6, depth=8, barriers=True)
+            self.checked = add_pauli_checks(
+                RemoveBarriers()(self.bare),
+                list(range(6)),
+                NoiseModel(gate_noise=1e-3, readout_noise=1e-2),
+                seed=4,
+            )[-1]
+            self.isolated = self.checked.box(payload_layers=_brickwork_layers(6))
+            # the bare circuit boxed exactly as the checked circuit's payload boxes are
+            self.boxed_bare = generate_boxing_pass_manager(**_BOXING_DEFAULTS).run(self.bare)
+
+    def test_payload_refs_come_from_the_bare_circuit(self):
+        """Every payload box carries a ref the bare circuit's boxing also carries."""
+        bare_refs = {
+            inject.ref
+            for instruction in self.boxed_bare.data
+            if instruction.operation.name == "box"
+            and (inject := get_annotation(instruction.operation, InjectNoise)) is not None
+            and inject.ref
+        }
+        ancillas = set(self.checked.check_qubits)
+        payload_refs, check_refs = set(), set()
+        for instruction in self.isolated.data:
+            if instruction.operation.name != "box":
+                continue
+            inject = get_annotation(instruction.operation, InjectNoise)
+            edges = _box_edges(instruction, self.isolated)
+            if inject is None or not edges:
+                continue
+            target = check_refs if any(set(e) & ancillas for e in edges) else payload_refs
+            target.add(inject.ref)
+        self.assertTrue(payload_refs)
+        self.assertLessEqual(payload_refs, bare_refs)
+        # the check layers are the only thing the bare model does not cover
+        self.assertFalse(check_refs & bare_refs)
+        # a brickwork payload keeps its two layers, and each check contributes one small layer
+        self.assertEqual(len(payload_refs), 2)
+        self.assertEqual(len(check_refs), len(self.checked.check_support))
