@@ -1,0 +1,12 @@
+---
+features:
+  - |
+    Added :meth:`qiskit_paulice.CheckedCircuit.box`, which groups the checked circuit into
+    the annotated boxes ``samplomatic`` uses for twirling, noise learning, and sampling. The
+    default ``check_layers="isolated"`` gives every check gate its own two-qubit layer, keeping
+    the number of unique layers to learn flat in circuit depth; ``check_layers="merged"`` packs
+    check gates into the payload layers instead, trading learning cost for depth and full
+    idling-noise coverage.
+upgrade:
+  - |
+    ``qiskit-paulice`` now requires ``samplomatic>=0.20.0``.
