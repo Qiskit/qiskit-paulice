@@ -24,7 +24,7 @@ from qiskit import QuantumCircuit
 from qiskit.quantum_info import Clifford
 from qiskit.transpiler.passes import RemoveBarriers
 from qiskit_paulice import CheckedCircuit, UncoveredPauli, add_pauli_checks
-from qiskit_paulice.checked_circuit import _BOXING_DEFAULTS
+from qiskit_paulice.checked_circuit import BOXING_DEFAULTS
 from qiskit_paulice.noise_models import NoiseModel
 from samplomatic.annotations import InjectNoise
 from samplomatic.transpiler import generate_boxing_pass_manager
@@ -229,11 +229,15 @@ class TestBox(unittest.TestCase):
         # the check gates are really in there
         self.assertTrue(any(set(e) & ancillas for e in boxed_edges))
 
-    def test_rejects_resets(self):
-        """Resets alter the Heisenberg evolution and are rejected until supported."""
+    def test_rejects_non_gate_instructions(self):
+        """Anything but unitary gates, measures, and barriers is rejected.
+
+        Resets alter the check propagation, and control flow can be reordered by
+        stratification, which tracks qubit wires but not clbit dataflow.
+        """
         checked, _ = _checked_example()
         checked.circuit.reset(0)
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "reset"):
             checked.box()
 
 
@@ -323,7 +327,7 @@ class TestBareModelReuse(unittest.TestCase):
             )[-1]
             self.isolated = self.checked.box(payload_layers=_brickwork_layers(6))
             # the bare circuit boxed exactly as the checked circuit's payload boxes are
-            self.boxed_bare = generate_boxing_pass_manager(**_BOXING_DEFAULTS).run(self.bare)
+            self.boxed_bare = generate_boxing_pass_manager(**BOXING_DEFAULTS).run(self.bare)
 
     def test_payload_refs_come_from_the_bare_circuit(self):
         """Every payload box carries a ref the bare circuit's boxing also carries."""

@@ -12,3 +12,4 @@ Checked circuit (:mod:`qiskit_paulice.checked_circuit`)
 .. autoclass:: CheckedCircuit
 .. autoclass:: UncoveredPauli
    :exclude-members: qubit, after_instruction, pauli
+.. autodata:: BOXING_DEFAULTS

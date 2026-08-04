@@ -23,14 +23,17 @@ from typing import Any, Literal, NamedTuple
 
 import numpy as np
 from qiskit import QuantumCircuit
+from qiskit.circuit import Gate
 from samplomatic.transpiler import generate_boxing_pass_manager
 
 from ._internal import Metric as _Metric
 from ._internal.conversion import convert_to_rustiq_circuit as _convert_to_rustiq_circuit
 from ._internal.utils import build_check_picker as _build_check_picker
 
-_NOT_PROPAGATED = frozenset({"measure", "barrier", "delay"})
-_BOXING_DEFAULTS: dict[str, Any] = {
+# Non-unitary instructions :meth:`CheckedCircuit.box` accepts; all else is rejected.
+_NON_GATES = frozenset({"measure", "barrier"})
+
+BOXING_DEFAULTS: dict[str, Any] = {
     "twirling_strategy": "active",
     "inject_noise_strategy": "individual_modification",
     "inject_noise_targets": "gates",
@@ -38,10 +41,12 @@ _BOXING_DEFAULTS: dict[str, Any] = {
     "measure_annotations": "all",
     "remove_barriers": "after_stratification",
 }
+"""Options :meth:`CheckedCircuit.box` passes to
+:func:`~samplomatic.transpiler.generate_boxing_pass_manager`, before ``**kwargs`` overrides."""
 
 
 class UncoveredPauli(NamedTuple):
-    """A spacetime location at which a single qubit Pauli error is undetectable by a set of checks.
+    """A spacetime location at which a single qubit Pauli error is undetectable by the set of checks.
 
     Attributes:
         qubit: Index of the qubit where the undetected error sits
@@ -130,25 +135,6 @@ class CheckedCircuit:
                 )
         return tuple(out)
 
-    @cached_property
-    def _cb_to_q(self) -> dict[int, int]:
-        cb_to_q: dict[int, int] = {}
-        for inst in self.circuit.data:
-            if inst.operation.name == "measure":
-                q = self.circuit.find_bit(inst.qubits[0]).index
-                cb = self.circuit.find_bit(inst.clbits[0]).index
-                cb_to_q[cb] = q
-        return cb_to_q
-
-    @cached_property
-    def _sub_array(self) -> np.ndarray:
-        n_qubits_full = self.circuit.num_qubits
-        sub_array = np.zeros((len(self.check_support), n_qubits_full), dtype=np.byte)
-        for i, vzs in enumerate(self.check_support):
-            for q in vzs:
-                sub_array[i, q] = 1
-        return sub_array
-
     def get_postselection_method(self) -> Callable[[str | np.ndarray], np.ndarray]:
         """Return a function that maps a single shot's outcome to a syndrome vector.
 
@@ -193,78 +179,101 @@ class CheckedCircuit:
         payload_layers: Iterable[Iterable[tuple[int, int]]] | None = None,
         **kwargs,
     ) -> QuantumCircuit:
-        """Box :attr:`circuit` for samplomatic, with every check gate isolated in its own layer.
+        """Box :attr:`circuit` while maintaining concurrent scheduling of payload layers.
 
-        Runs :func:`~samplomatic.transpiler.generate_boxing_pass_manager` on :attr:`circuit` --
-        the circuit that is actually executed, ancillas and check gates included -- after
-        regrouping it so each check gate sits alone in a two-qubit layer scoped to its own
-        qubits. Repeats of a box with the same entangling gates then share a ``ref``: the unique
-        layers a noise learner must characterize are the payload's own plus one small layer per
-        check, a count that does not grow with circuit depth, and the payload boxes carry the
-        same ``ref`` values as a boxing of the bare circuit, so a noise model learned once on the
-        bare circuit binds to them.
-
-        Box the executed circuit, never the bare one: the bare circuit's boxes carry different
-        ``ref`` values while their ``modifier_ref`` values collide with this circuit's. For a
-        depth-preserving boxing without check isolation, run samplomatic's boxing pass on
-        :attr:`circuit` directly.
+        This method schedules each entangling gate connecting a target, ancilla pair of
+        qubits into its own box. This is beneficial in that the number of unique entangling
+        layers is minimized, but it comes at a cost of sub-optimal scheduling since scheduling
+        each gate of each Pauli check into its own time slice causes additional idling time across
+        all qubits.
 
         Args:
-            payload_layers: the payload's unique entangling layers, each a collection of
-                qubit-index pairs. Supply them when the payload's layer structure is known; every
-                payload stratum is then an instance of exactly one of these layers. An edge may
-                appear in only one layer. When ``None``, layers are derived by packing payload
-                gates as early as possible, which may not recover an intended structure.
-            **kwargs: overrides for :func:`~samplomatic.transpiler.generate_boxing_pass_manager`.
+            payload_layers: The unique entangling layers of the bare payload circuit. Each inner
+                list contains the edges for one unique layer. Edges should not be repeated
+                within the same layer nor across layers.
+            **kwargs: Overrides for :func:`~samplomatic.transpiler.generate_boxing_pass_manager`.
+                Defaults to the key-value pairs in
+                :data:`~qiskit_paulice.checked_circuit.BOXING_DEFAULTS`.
 
         Returns:
             :attr:`circuit`, boxed and annotated.
 
         Raises:
-            ValueError: ``payload_layers`` does not describe this circuit's payload gates, or
-                :attr:`circuit` contains a reset, which is not yet supported.
+            ValueError: ``payload_layers`` does not describe this circuit's payload gates.
+            ValueError: ``payload_layers`` contains duplicate edges.
+            ValueError: :attr:`circuit` contains an instruction other than unitary gates,
+                measurements, and barriers.
         """
-        if any(instruction.operation.name == "reset" for instruction in self.circuit.data):
-            raise ValueError(
-                "circuits containing resets are not supported yet: propagating check "
-                "operators through a reset is not implemented."
-            )
-        options = {**_BOXING_DEFAULTS, **kwargs}
+        for instruction in self.circuit.data:
+            operation = instruction.operation
+            if not isinstance(operation, Gate) and operation.name not in _NON_GATES:
+                raise ValueError(
+                    f"'{operation.name}' is not supported: a checked circuit may contain only "
+                    "unitary gates, measurements, and barriers."
+                )
+        options = {**BOXING_DEFAULTS, **kwargs}
         return generate_boxing_pass_manager(**options).run(self._stratify(payload_layers))
+
+    @cached_property
+    def _cb_to_q(self) -> dict[int, int]:
+        cb_to_q: dict[int, int] = {}
+        for inst in self.circuit.data:
+            if inst.operation.name == "measure":
+                q = self.circuit.find_bit(inst.qubits[0]).index
+                cb = self.circuit.find_bit(inst.clbits[0]).index
+                cb_to_q[cb] = q
+        return cb_to_q
+
+    @cached_property
+    def _sub_array(self) -> np.ndarray:
+        n_qubits_full = self.circuit.num_qubits
+        sub_array = np.zeros((len(self.check_support), n_qubits_full), dtype=np.byte)
+        for i, vzs in enumerate(self.check_support):
+            for q in vzs:
+                sub_array[i, q] = 1
+        return sub_array
 
     def _stratify(
         self, payload_layers: Iterable[Iterable[tuple[int, int]]] | None
     ) -> QuantumCircuit:
-        """Re-emit :attr:`circuit` with each check gate alone in its own barrier-delimited layer.
+        """Return a copy of the checked circuit that is separated into layers.
 
-        Every instruction gets a stratum key and the circuit is stable-sorted by it. The keys are
-        monotone along every qubit's wire, so no two instructions sharing a qubit are ever
-        reordered and the result implements the same unitary.
+        This method isolates entangling gates that are part of a Pauli check into
+        their own stratum and maintains the payload layer scheduling. This has the
+        downside of additional idling time on all qubits and the upside of having
+        fewer unique entangling layers for which to learn noise.
         """
+        # Unpack circuit into lists of instructions and qubit indices
         circuit = self.circuit
         ancillas = set(self.check_qubits)
         data = [inst for inst in circuit.data if inst.operation.name != "barrier"]
         indices = [[circuit.find_bit(q).index for q in inst.qubits] for inst in data]
 
+        # Get a mapping from edges to their associated layer IDs
         edge_to_layer = _edge_to_layer(payload_layers) if payload_layers is not None else None
+
+        # For a given layer of entangling gates (stratum), store which unique layer it is.
         stratum_ids: list[int] = []
-        after_layer: dict[int, int] = defaultdict(lambda: -1)
+        # Mapping from a gap between two payload layers to the number of checks it contains
         checks_in_gap: dict[int, int] = defaultdict(int)
+        # Mapping from qubit ID to the earliest stratum ID where it is free
         free_from: dict[int, int] = defaultdict(int)
 
-        # Payload gates pack as early as their qubits allow; each check gate gets a stratum of
-        # its own, in the gap after the last payload layer to touch its target.
-        keys: dict[int, tuple[int, int, int]] = {}
+        # Mapping from entangling gates to the gap/stratum in which they belong
+        keys: dict[int, tuple[int, int]] = {}
         for i, inst in enumerate(data):
-            if len(inst.qubits) != 2 or inst.operation.name in _NOT_PROPAGATED:
+            if len(inst.qubits) != 2:
                 continue
             a, b = sorted(indices[i])
+            # Instruction is a check gate
             if {a, b} & ancillas:
                 target = b if a in ancillas else a
-                gap = after_layer[target]
+                # Check qubit should be sandwiched between payload strata where its target qubit is used
+                gap = free_from[target] - 1
                 checks_in_gap[gap] += 1
-                keys[i] = (gap, 1, checks_in_gap[gap])
+                keys[i] = (gap, checks_in_gap[gap])
                 continue
+            # Earliest stratum where both qubits are free: ASAP packing.
             layer = max(free_from[a], free_from[b])
             if edge_to_layer is not None:
                 if (a, b) not in edge_to_layer:
@@ -272,19 +281,22 @@ class CheckedCircuit:
                         "payload_layers does not describe this circuit's payload gates: edge "
                         f"{(a, b)} is in no layer."
                     )
-                # Never mix gates from different unique layers in one stratum.
                 unique = edge_to_layer[(a, b)]
+                # Skip past strata that are instances of a different unique layer.
                 while layer < len(stratum_ids) and stratum_ids[layer] != unique:
                     layer += 1
+                # Start a new stratum if necessary
                 if layer == len(stratum_ids):
                     stratum_ids.append(unique)
-            keys[i] = (layer, 0, 0)
-            free_from[a] = free_from[b] = layer + 1
-            after_layer[a] = after_layer[b] = layer
+            # Specify the stratum the payload instruction is associated with and hard-code 0 to indicate this is a payload stratum.
+            keys[i] = (layer, 0)
+            # Both qubits are now occupied through this stratum.
+            free_from[a] = layer + 1
+            free_from[b] = layer + 1
 
-        # Every other instruction rides with the next entangler on any of its qubits, or the end.
-        end = (len(data), 0, 0)
-        next_key: dict[int, tuple[int, int, int]] = defaultdict(lambda: end)
+        # Associate single qubit gates with the entangling stratum to their right
+        end = (len(data), 0)
+        next_key: dict[int, tuple[int, int]] = defaultdict(lambda: end)
         for i in reversed(range(len(data))):
             if i in keys:
                 for q in indices[i]:
@@ -293,11 +305,14 @@ class CheckedCircuit:
                 keys[i] = min((next_key[q] for q in indices[i]), default=end)
 
         out = circuit.copy_empty_like()
+        # Reorder the instructions by which stratum they're in. Original order maintained in ties.
+        # Place instructions in new order such that original unique layers are maintained and
+        # Pauli check gates have their own time-slice. Use barriers to delimit the strata.
         order = sorted(range(len(data)), key=keys.__getitem__)
-        for key, stratum in groupby(order, key=keys.__getitem__):
-            for i in stratum:
+        for stratum_key, members in groupby(order, key=keys.__getitem__):
+            for i in members:
                 out.append(data[i])
-            if key != end:
+            if stratum_key != end:
                 out.barrier()
         return out
 
