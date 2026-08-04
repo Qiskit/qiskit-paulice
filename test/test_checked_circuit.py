@@ -211,7 +211,7 @@ class TestBox(unittest.TestCase):
     """Tests for ``CheckedCircuit.box``."""
 
     def test_boxes_the_executed_circuit(self):
-        """Every entangling gate of the checked circuit -- check gates included -- lands in a box."""
+        """Every entangling gate of the checked circuit lands in a box."""
         checked, boxed = _checked_example()
         ancillas = set(checked.check_qubits)
         circuit_edges = [
@@ -229,12 +229,15 @@ class TestBox(unittest.TestCase):
         # the check gates are really in there
         self.assertTrue(any(set(e) & ancillas for e in boxed_edges))
 
-    def test_rejects_non_gate_instructions(self):
-        """Anything but unitary gates, measures, and barriers is rejected.
+    def test_rejects_gates_on_three_or_more_qubits(self):
+        """A many-qubit gate is an error: stratification would silently reorder it."""
+        checked, _ = _checked_example()
+        checked.circuit.ccx(0, 1, 2)
+        with self.assertRaisesRegex(ValueError, "ccx"):
+            checked.box()
 
-        Resets alter the check propagation, and control flow can be reordered by
-        stratification, which tracks qubit wires but not clbit dataflow.
-        """
+    def test_rejects_non_gate_instructions(self):
+        """Anything but unitary gates, measures, and barriers is rejected."""
         checked, _ = _checked_example()
         checked.circuit.reset(0)
         with self.assertRaisesRegex(ValueError, "reset"):
@@ -248,7 +251,7 @@ class TestIsolatedCheckLayers(unittest.TestCase):
         self.checked, self.isolated = _checked_example(nq=6, depth=8, seed=4)
 
     def test_same_circuit(self):
-        """Isolating check gates only regroups them: same gates, same unitary."""
+        """Isolating check gates doesn't change the unitary the circuit implements."""
         stripped = self.checked._stratify(None)
         self.assertEqual(_gate_counts(self.checked.circuit), _gate_counts(stripped))
         original = RemoveBarriers()(self.checked.circuit.remove_final_measurements(inplace=False))
@@ -256,7 +259,7 @@ class TestIsolatedCheckLayers(unittest.TestCase):
         self.assertEqual(Clifford(original), Clifford(restratified))
 
     def test_each_check_gate_boxed_alone(self):
-        """A check box is exactly its one gate: a single edge on a two-qubit box."""
+        """A check box is exactly its one gate."""
         ancillas = set(self.checked.check_qubits)
         saw_check_box = False
         for instruction in self.isolated.data:
@@ -270,7 +273,7 @@ class TestIsolatedCheckLayers(unittest.TestCase):
         self.assertTrue(saw_check_box)
 
     def test_unique_layers_is_payload_plus_one_per_check(self):
-        """The whole point: two brickwork payload layers plus one unique layer per check."""
+        """Ensure checks add one unique layer apiece."""
         ancillas = set(self.checked.check_qubits)
         payload, check = set(), set()
         for edges in _box_edge_sets(self.isolated):
@@ -296,19 +299,19 @@ class TestIsolatedCheckLayers(unittest.TestCase):
         self.assertEqual(len(set(_box_edge_sets(split))), 2)
 
     def test_rejects_foreign_payload_layers(self):
-        """Layers that do not cover the payload's edges are an error, not a mislabelling."""
+        """Error on layers that do not cover the payload's edges."""
         with self.assertRaises(ValueError):
             self.checked.box(payload_layers=_brickwork_layers(4))
 
     def test_rejects_ambiguous_payload_layers(self):
-        """An edge sitting in two unique layers has no well-defined boxing."""
+        """Error on redundant layers."""
         layers = _brickwork_layers(6)
         layers[1].add((0, 1))
         with self.assertRaises(ValueError):
             self.checked.box(payload_layers=layers)
 
     def test_builds_a_samplex(self):
-        """The isolated boxing is a working samplomatic circuit."""
+        """The boxed circuit is a working samplomatic circuit."""
         samplomatic.build(self.isolated)
 
 

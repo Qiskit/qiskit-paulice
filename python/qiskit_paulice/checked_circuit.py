@@ -67,7 +67,7 @@ class CheckedCircuit:
     Attributes:
         circuit: A quantum circuit containing ``0`` or more spacetime Pauli checks.
         target_qubits: Qubit indices of ``circuit`` which were used to entangle the check
-            qubits to the payload. ``None`` if ``circuit`` contains no checks.
+            qubits to the payload. Empty if ``circuit`` contains no checks.
         check_qubits: Qubit indices of the ancilla qubits in ``circuit``. The ``i``th
             check uses ``check_qubits[i]`` to detect errors on ``target_qubits[i]`` and other
             qubits in ``check_support[i]``.
@@ -201,15 +201,17 @@ class CheckedCircuit:
         Raises:
             ValueError: ``payload_layers`` does not describe this circuit's payload gates.
             ValueError: ``payload_layers`` contains duplicate edges.
-            ValueError: :attr:`circuit` contains an instruction other than unitary gates,
-                measurements, and barriers.
+            ValueError: :attr:`circuit` contains an instruction other than one- and two-qubit
+                unitary gates, measurements, and barriers.
         """
         for instruction in self.circuit.data:
             operation = instruction.operation
-            if not isinstance(operation, Gate) and operation.name not in _NON_GATES:
+            if operation.name in _NON_GATES:
+                continue
+            if not isinstance(operation, Gate) or len(instruction.qubits) > 2:
                 raise ValueError(
                     f"'{operation.name}' is not supported: a checked circuit may contain only "
-                    "unitary gates, measurements, and barriers."
+                    "one- and two-qubit unitary gates, measurements, and barriers."
                 )
         options = {**BOXING_DEFAULTS, **kwargs}
         return generate_boxing_pass_manager(**options).run(self._stratify(payload_layers))
