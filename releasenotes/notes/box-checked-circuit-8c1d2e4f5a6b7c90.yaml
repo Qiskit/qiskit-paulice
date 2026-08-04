@@ -2,10 +2,9 @@
 features:
   - |
     Added :meth:`qiskit_paulice.CheckedCircuit.box`, which groups the checked circuit into the
-    annotated boxes ``samplomatic`` uses for twirling, noise learning, and sampling, giving
-    every check gate a two-qubit layer of its own. Repeated boxes with the same entangling
-    gates share box references, so the number of unique layers to learn stays flat in circuit
-    depth, and a noise model learned on the bare circuit binds to the payload boxes.
+    annotated boxes used for twirling, noise learning, and sampling, scheduling
+    each Pauli check entangling gate into a box of its own. This minimizes the number of unique entangling
+    layers at the cost of sub-optimal gate scheduling.
 upgrade:
   - |
     ``qiskit-paulice`` now requires ``samplomatic>=0.20.0``.
