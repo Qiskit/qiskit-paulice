@@ -181,11 +181,14 @@ class CheckedCircuit:
     ) -> QuantumCircuit:
         """Box :attr:`circuit` while maintaining concurrent scheduling of payload layers.
 
-        This method schedules each entangling gate connecting a target, ancilla pair of
-        qubits into its own box. This is beneficial in that the number of unique entangling
-        layers is minimized, but it comes at a cost of sub-optimal scheduling since scheduling
-        each gate of each Pauli check into its own time slice causes additional idling time across
-        all qubits.
+        This method delimits the entangling layers of the checked circuit with boxes such
+        that the number of unique entangling layers is minimized. This is done by scheduling
+        the entangling gates from the Pauli checks into boxes of their own, resulting in one
+        unique layer per Pauli check in addition to the ``payload_layers``.
+
+        Scheduling check gates into boxes of their own is beneficial in that the number of
+        unique entangling layers is minimized, but it comes at a cost of sub-optimal
+        gate scheduling.
 
         Args:
             payload_layers: The unique entangling layers of the bare payload circuit. Each inner
