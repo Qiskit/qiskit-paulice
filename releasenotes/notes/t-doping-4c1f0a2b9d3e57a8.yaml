@@ -1,0 +1,28 @@
+---
+features:
+  - |
+    Added the new :func:`qiskit_paulice.doping.dope_clifford_circuit` function, which inserts
+    magic-injecting ``T`` gates into a Clifford circuit at wires classified via the spacetime
+    stabilizer formalism (`arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`__, Sec. S1.3).
+    The default mode preserves the sampled computational-basis distribution exactly, while
+    ``preserve_distribution=False`` implements the reference's distribution-changing selection
+    with its iterated pruning rewrites (the XEB regime). When given a
+    :class:`qiskit_paulice.CheckedCircuit`, doping is restricted to wires commuting with every
+    check's back-cumulant, so the spacetime code and its post-selection are preserved. Doped
+    wires are reported as :class:`qiskit_paulice.doping.DopingSite` instances. For
+    hardware-style instances, ``after_entangling_only=True`` restricts sites to wires directly
+    following an entangling gate (where a ``Z`` rotation merges into the following
+    single-qubit layer as a zero-cost virtual ``RZ``), and ``parametric=True`` emits one
+    template circuit with a ``dope`` parameter per site, covering every doping configuration
+    (``pi/4`` for ``T``, ``pi/2`` for ``S``, ``pi`` for ``Z``, ``0`` for identity) with a
+    single pulse schedule.
+  - |
+    Added the new :meth:`qiskit_paulice.CheckedCircuit.estimate_fault_rates` method: one
+    Monte Carlo fault simulation of a checked Clifford circuit under a
+    :class:`qiskit_paulice.NoiseModel`, returning a :class:`qiskit_paulice.FaultRates` with
+    the acceptance rate, the accepted-but-harmless fault rate (the correction term in the
+    doped-fidelity certificate of `arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`__,
+    Sec. S2 -- subtracting it from the measured fidelity of the undoped checked circuit
+    lower bounds the fidelity of the ``T``-doped circuit), the post-selected logical error
+    rate, and per-check syndrome trigger rates for validating a noise model against
+    measured syndrome data. All rates carry standard errors.

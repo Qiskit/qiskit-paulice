@@ -18,17 +18,20 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import cached_property
-from itertools import groupby
+from itertools import groupby, product
 from typing import Any, Literal, NamedTuple
 
 import numpy as np
 from qiskit import QuantumCircuit
 from qiskit.circuit import Gate
+from qiskit.exceptions import QiskitError
+from qiskit.quantum_info import Clifford, PauliList
 from samplomatic.transpiler import generate_boxing_pass_manager
 
 from ._internal import Metric as _Metric
 from ._internal.conversion import convert_to_rustiq_circuit as _convert_to_rustiq_circuit
 from ._internal.utils import build_check_picker as _build_check_picker
+from .noise_models import NoiseModel
 
 # Non-unitary instructions :meth:`CheckedCircuit.box` accepts; all else is rejected.
 _NON_GATES = frozenset({"measure", "barrier"})
@@ -58,6 +61,40 @@ class UncoveredPauli(NamedTuple):
     qubit: int
     after_instruction: int | None
     pauli: Literal["X", "Y", "Z"]
+
+
+class FaultRates(NamedTuple):
+    r"""Monte Carlo estimates of a checked circuit's fault rates under a noise model.
+
+    All rates are estimated from one common set of sampled fault configurations.
+
+    Attributes:
+        harmless_rate: Probability that a nonidentity fault configuration is harmless --
+            back-propagates to a diagonal Pauli on the circuit input, acting as a global
+            phase on :math:`|0^n\rangle` -- given that it is accepted (zero syndrome on
+            every check).
+        harmless_stderr: Standard error of ``harmless_rate``.
+        logical_error_rate: Probability that some payload measurement outcome is flipped,
+            given that the fault configuration is accepted -- the residual error rate
+            surviving post-selection.
+        logical_error_stderr: Standard error of ``logical_error_rate``.
+        acceptance_rate: Probability that a fault configuration produces a zero syndrome on
+            every check.
+        acceptance_stderr: Standard error of ``acceptance_rate``.
+        check_trigger_rates: For each check, the probability that its syndrome bit reads 1.
+        check_trigger_stderrs: Standard errors of ``check_trigger_rates``.
+        shots: Number of fault configurations sampled.
+    """
+
+    harmless_rate: float
+    harmless_stderr: float
+    logical_error_rate: float
+    logical_error_stderr: float
+    acceptance_rate: float
+    acceptance_stderr: float
+    check_trigger_rates: tuple[float, ...]
+    check_trigger_stderrs: tuple[float, ...]
+    shots: int
 
 
 @dataclass(frozen=True, eq=False)
@@ -173,6 +210,143 @@ class CheckedCircuit:
             return (sub_array @ x) % 2
 
         return _aux
+
+    def estimate_fault_rates(
+        self,
+        noise_model: NoiseModel,
+        shots: int = 100_000,
+        seed: int | np.random.Generator | None = None,
+    ) -> FaultRates:
+        r"""Estimate acceptance, harmless-fault, logical-error, and check trigger rates.
+
+        One Monte Carlo simulation of Pauli fault configurations drawn from ``noise_model``
+        yields four families of rates. A configuration is *accepted* if it flips no check
+        syndrome (the ``acceptance_rate``, for shot budgeting), and *harmless* if it is
+        nonidentity yet back-propagates to a diagonal Pauli on the circuit input -- it then
+        acts as a global phase on :math:`|0^n\rangle`, leaving the Clifford output state
+        untouched. The conditional rate :math:`\Pr(\text{harmless} \mid \text{accepted})` is
+        the correction term in the doped fidelity bound of
+        `arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`_ (Sec. S2): doping converts at
+        worst every harmless fault into a harmful one, so
+
+        .. math:: F_{\text{doped}} \;\geq\; F_{\text{Clifford}} - \Pr(H \mid A),
+
+        where :math:`F_{\text{Clifford}}` is the post-selected fidelity of this (undoped)
+        checked circuit, e.g. measured by direct fidelity estimation.
+
+        The remaining rates support that certificate operationally. The
+        ``logical_error_rate`` is the probability that an accepted configuration flips a
+        payload measurement outcome -- the residual error surviving post-selection,
+        evaluable for any noise model after the checks are fixed (unlike the ``cost``
+        recorded at pick time). The ``check_trigger_rates`` predict how often each syndrome
+        bit reads 1; comparing them against measured syndrome data validates the noise model
+        itself, and thereby the harmless-rate correction computed from it.
+
+        Faults are sampled from independent Pauli-Lindblad generators following each
+        entangling gate (a rate-:math:`\lambda` generator fires with probability
+        :math:`(1 - e^{-2\lambda})/2`), matching the noise conventions of
+        :func:`~qiskit_paulice.checks.add_pauli_checks`; edges absent from a gate-wise model
+        fall back to the median rate per Pauli pair. Readout errors enter the syndrome (hence
+        acceptance) and the payload outcomes (hence the logical error rate) but, being
+        classical, never the state. Layered and idling noise are not supported.
+
+        Args:
+            noise_model: The noise model to sample fault configurations from. Supports
+                uniform (:class:`float`) and :data:`.GateWiseNoise` gate noise plus readout
+                noise.
+            shots: Number of fault configurations to sample.
+            seed: A seed or generator for the fault sampling.
+
+        Returns:
+            The estimated rates with their standard errors.
+
+        Raises:
+            ValueError: The noise model is empty, or uses layered or idling noise.
+            ValueError: :attr:`circuit` contains a non-Clifford instruction (call this on the
+                undoped checked circuit -- the bound's reference point -- not the doped one).
+            ValueError: No sampled configuration was accepted.
+        """
+        gate_noise = noise_model.gate_noise
+        if noise_model.idling_noise is not None:
+            raise ValueError("Idling noise is not supported by estimate_harmless_rate.")
+        if (
+            isinstance(gate_noise, dict)
+            and gate_noise
+            and isinstance(next(iter(gate_noise))[0], tuple)
+        ):
+            raise ValueError(
+                "Layered gate noise is not supported by estimate_harmless_rate; "
+                "use uniform or gate-wise noise."
+            )
+        if gate_noise is None and noise_model.readout_noise is None:
+            raise ValueError("The noise model may not be empty.")
+        if noise_model.readout_noise is not None and not 0 <= noise_model.readout_noise < 0.5:
+            raise ValueError("readout_noise must lie in [0, 0.5).")
+        rates, x_img, z_img, full_clifford = _fault_channels(self.circuit, gate_noise)
+
+        masks = self._sub_array.astype(np.uint8)
+        signatures = x_img.astype(np.uint8) @ masks.T % 2
+        back = PauliList.from_symplectic(z_img, x_img).evolve(full_clifford, frame="h")
+        measured = np.array(sorted(self._cb_to_q.values()), dtype=int)
+        payload = np.array([q for q in measured if q not in set(self.check_qubits)], dtype=int)
+        # A fault flips payload outcome q iff its output image anticommutes with Z_q.
+        flip_rows = x_img[:, payload].astype(np.uint8)
+
+        # One row of XOR accumulators per shot; each generator firing XORs in its syndrome
+        # signature, payload outcome flips, and back-propagated symplectic rows.
+        # Poisson(shots * rate) firings spread uniformly over shots give i.i.d.
+        # Poisson(rate) counts per shot, whose odd-count (flip) probability is exactly the
+        # Pauli-Lindblad (1 - exp(-2 rate))/2.
+        rng = np.random.default_rng(seed)
+        syndrome = np.zeros((shots, len(masks)), dtype=np.uint8)
+        outcome = np.zeros((shots, len(payload)), dtype=np.uint8)
+        back_x = np.zeros((shots, self.circuit.num_qubits), dtype=np.uint8)
+        back_z = np.zeros_like(back_x)
+        channel = np.repeat(np.arange(len(rates)), rng.poisson(shots * rates))
+        shot = rng.integers(0, shots, len(channel))
+        np.bitwise_xor.at(syndrome, shot, signatures[channel])
+        np.bitwise_xor.at(outcome, shot, flip_rows[channel])
+        np.bitwise_xor.at(back_x, shot, back.x[channel].astype(np.uint8))
+        np.bitwise_xor.at(back_z, shot, back.z[channel].astype(np.uint8))
+        if noise_model.readout_noise is not None:
+            # A readout flip on measured qubit q toggles every check with q in its support,
+            # and the outcome bit itself when q is a payload qubit.
+            outcome_rows = (payload[None, :] == measured[:, None]).astype(np.uint8)
+            readout_rate = -np.log(1 - 2 * noise_model.readout_noise) / 2
+            index = np.repeat(
+                np.arange(len(measured)), rng.poisson(shots * readout_rate, len(measured))
+            )
+            shot = rng.integers(0, shots, len(index))
+            np.bitwise_xor.at(syndrome, shot, masks.T[measured[index]])
+            np.bitwise_xor.at(outcome, shot, outcome_rows[index])
+
+        accepted = ~syndrome.any(axis=1)
+        num_accepted = int(accepted.sum())
+        if num_accepted == 0:
+            raise ValueError(
+                f"None of the {shots} sampled fault configurations was accepted; increase "
+                "shots or reduce the noise strength."
+            )
+        nonidentity = (back_x | back_z).any(axis=1)
+        harmless = (accepted & nonidentity & ~back_x.any(axis=1)).sum() / num_accepted
+        logical = (accepted & outcome.any(axis=1)).sum() / num_accepted
+        acceptance = num_accepted / shots
+        triggers = syndrome.mean(axis=0)
+
+        def _stderr(probability: float, count: int) -> float:
+            return float(np.sqrt(probability * (1 - probability) / count))
+
+        return FaultRates(
+            harmless_rate=float(harmless),
+            harmless_stderr=_stderr(harmless, num_accepted),
+            logical_error_rate=float(logical),
+            logical_error_stderr=_stderr(logical, num_accepted),
+            acceptance_rate=float(acceptance),
+            acceptance_stderr=_stderr(acceptance, shots),
+            check_trigger_rates=tuple(float(p) for p in triggers),
+            check_trigger_stderrs=tuple(_stderr(float(p), shots) for p in triggers),
+            shots=shots,
+        )
 
     def box(
         self,
@@ -334,3 +508,94 @@ def _edge_to_layers(
         for a, b in layer:
             edge_to_layers[(min(a, b), max(a, b))].add(index)
     return dict(edge_to_layers)
+
+
+_PAULI_PAIRS = ["".join(pair) for pair in product("IXYZ", repeat=2)][1:]
+
+
+def _edge_generators(
+    gate_noise: float | dict,
+) -> Callable[[tuple[int, int]], list[tuple[str, float]]]:
+    """Per-edge elementary ``(pauli_pair, lindblad_rate)`` generators of a gate noise spec.
+
+    A uniform depolarizing probability ``p`` becomes the 15 non-identity pairs at rate
+    ``-ln(1 - 4p/15)/4``; a gate-wise model is canonicalized to ``(min, max)`` edges, with
+    the median rate per Pauli pair as the fallback for absent edges -- both matching the
+    conventions of the Rust check evaluator.
+    """
+    if not isinstance(gate_noise, dict):
+        rate = -np.log(1 - 4 * gate_noise / 15) / 4
+        pairs = [(pair, rate) for pair in _PAULI_PAIRS]
+        return lambda edge: pairs
+    table = {}
+    for (a, b), generators in gate_noise.items():
+        table[min(a, b), max(a, b)] = [
+            (pair if a <= b else pair[::-1], rate) for pair, rate in generators
+        ]
+    by_pair = defaultdict(list)
+    for generators in table.values():
+        for pair, rate in generators:
+            by_pair[pair].append(rate)
+    fallback = [(pair, float(np.median(rates))) for pair, rates in by_pair.items()]
+    return lambda edge: table.get(edge, fallback)
+
+
+def _fault_channels(
+    circuit: QuantumCircuit, gate_noise: float | dict | None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, Clifford]:
+    """Firing probabilities and output-frame images of every elementary fault channel.
+
+    Sweeps the circuit backward maintaining the Clifford of the instruction suffix, which
+    conjugates a Pauli fault following each entangling gate to the circuit output:
+    destabilizer row ``q`` of the tableau is the image of ``X_q`` and stabilizer row ``q``
+    that of ``Z_q``, so a generator's image is their XOR over its symplectic components.
+
+    Returns:
+        ``(rates, x, z, full_clifford)``: per channel the Lindblad rate (flip probability
+        ``(1 - exp(-2 rate))/2``) and the symplectic rows of its image at the output, plus
+        the Clifford of the entire circuit.
+
+    Raises:
+        ValueError: on a non-Clifford instruction or a non-terminal measurement.
+    """
+    generators = _edge_generators(gate_noise) if gate_noise is not None else lambda edge: []
+    num_qubits = circuit.num_qubits
+    suffix = Clifford.from_label("I" * num_qubits)
+    touched: set[int] = set()
+    rates: list[float] = []
+    x_rows: list[np.ndarray] = []
+    z_rows: list[np.ndarray] = []
+    for inst in reversed(circuit.data):
+        name = inst.operation.name
+        if name == "barrier":
+            continue
+        qargs = [circuit.find_bit(qubit).index for qubit in inst.qubits]
+        if name == "measure":
+            if qargs[0] in touched:
+                raise ValueError(
+                    f"Qubit {qargs[0]} is used after its measurement; only terminal "
+                    "measurements are supported."
+                )
+            continue
+        touched.update(qargs)
+        if len(qargs) == 2:
+            for pair, rate in generators((min(qargs), max(qargs))):
+                x = np.zeros(num_qubits, dtype=bool)
+                z = np.zeros(num_qubits, dtype=bool)
+                for qubit, char in zip(sorted(qargs), pair, strict=True):
+                    if char in "XY":
+                        x ^= suffix.destab_x[qubit]
+                        z ^= suffix.destab_z[qubit]
+                    if char in "ZY":
+                        x ^= suffix.stab_x[qubit]
+                        z ^= suffix.stab_z[qubit]
+                rates.append(rate)
+                x_rows.append(x)
+                z_rows.append(z)
+        try:
+            suffix = suffix.dot(inst.operation, qargs=qargs)
+        except QiskitError as exc:
+            raise ValueError(f"Non-Clifford instruction in circuit: {name!r}") from exc
+    x = np.asarray(x_rows, dtype=bool).reshape(len(x_rows), num_qubits)
+    z = np.asarray(z_rows, dtype=bool).reshape(len(z_rows), num_qubits)
+    return np.asarray(rates), x, z, suffix
