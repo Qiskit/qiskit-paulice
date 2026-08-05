@@ -169,4 +169,4 @@ change, or deprecation will be documented in the [release notes](https://quantum
 
 [1] Simon Martiel, Ali Javadi-Abhari, [Low-overhead error detection with spacetime codes](https://arxiv.org/abs/2504.15725), arXiv:2504.15725 [quant-ph].
 
-[2] Simon Martiel, et al., [Sampling hard circuits with verifiably high fidelityh](https://arxiv.org/abs/2607.25941), arXiv:2607.25941 [quant-ph].
+[2] Simon Martiel, et al., [Sampling hard circuits with verifiably high fidelity](https://arxiv.org/abs/2607.25941), arXiv:2607.25941 [quant-ph].
