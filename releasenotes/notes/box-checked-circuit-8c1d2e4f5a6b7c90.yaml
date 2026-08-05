@@ -5,6 +5,3 @@ features:
     annotated boxes used for twirling, noise learning, and sampling, scheduling
     each Pauli check entangling gate into a box of its own. This minimizes the number of unique entangling
     layers at the cost of sub-optimal gate scheduling.
-upgrade:
-  - |
-    ``qiskit-paulice`` now requires ``samplomatic>=0.20.0``.
