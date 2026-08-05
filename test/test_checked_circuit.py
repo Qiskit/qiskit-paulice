@@ -303,12 +303,19 @@ class TestIsolatedCheckLayers(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.checked.box(payload_layers=_brickwork_layers(4))
 
-    def test_rejects_ambiguous_payload_layers(self):
-        """Error on redundant layers."""
-        layers = _brickwork_layers(6)
-        layers[1].add((0, 1))
-        with self.assertRaises(ValueError):
-            self.checked.box(payload_layers=layers)
+    def test_shared_edges_across_payload_layers(self):
+        """An edge may sit in several unique layers; each stratum instantiates one of them."""
+        qc = QuantumCircuit(4)
+        qc.cz(0, 1)
+        qc.cz(2, 3)
+        qc.cz(1, 2)
+        qc.cz(2, 3)
+        qc.measure_all()
+        checked = CheckedCircuit(circuit=qc)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            boxed = checked.box(payload_layers=[{(0, 1), (2, 3)}, {(1, 2)}, {(2, 3)}])
+        self.assertEqual(_box_edge_sets(boxed), [{(0, 1), (2, 3)}, {(1, 2)}, {(2, 3)}])
 
     def test_builds_a_samplex(self):
         """The boxed circuit is a working samplomatic circuit."""

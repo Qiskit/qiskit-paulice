@@ -193,7 +193,8 @@ class CheckedCircuit:
         Args:
             payload_layers: The unique entangling layers of the bare payload circuit. Each inner
                 list contains the edges for one unique layer. Edges should not be repeated
-                within the same layer nor across layers.
+                within the same layer, but may appear in multiple layers; each stratum of the
+                boxed circuit is then consistent with (a subset of) one of these layers.
             **kwargs: Overrides for :func:`~samplomatic.transpiler.generate_boxing_pass_manager`.
                 Defaults to the key-value pairs in
                 :data:`~qiskit_paulice.checked_circuit.BOXING_DEFAULTS`.
@@ -203,7 +204,6 @@ class CheckedCircuit:
 
         Raises:
             ValueError: ``payload_layers`` does not describe this circuit's payload gates.
-            ValueError: ``payload_layers`` contains duplicate edges.
             ValueError: :attr:`circuit` contains an instruction other than one- and two-qubit
                 unitary gates, measurements, and barriers.
         """
@@ -255,10 +255,11 @@ class CheckedCircuit:
         indices = [[circuit.find_bit(q).index for q in inst.qubits] for inst in data]
 
         # Get a mapping from edges to their associated layer IDs
-        edge_to_layer = _edge_to_layer(payload_layers) if payload_layers is not None else None
+        edge_to_layers = _edge_to_layers(payload_layers) if payload_layers is not None else None
 
-        # For a given layer of entangling gates (stratum), store which unique layer it is.
-        stratum_ids: list[int] = []
+        # For a given layer of entangling gates (stratum), store which unique layers it is
+        # still consistent with; joining gates narrow the set.
+        viable_layers: list[set[int]] = []
         # Mapping from a gap between two payload layers to the number of checks it contains
         checks_in_gap: dict[int, int] = defaultdict(int)
         # Mapping from qubit ID to the earliest stratum ID where it is free
@@ -280,19 +281,21 @@ class CheckedCircuit:
                 continue
             # Earliest stratum where both qubits are free: ASAP packing.
             layer = max(free_from[a], free_from[b])
-            if edge_to_layer is not None:
-                if (a, b) not in edge_to_layer:
+            if edge_to_layers is not None:
+                if (a, b) not in edge_to_layers:
                     raise ValueError(
                         "payload_layers does not describe this circuit's payload gates: edge "
                         f"{(a, b)} is in no layer."
                     )
-                unique = edge_to_layer[(a, b)]
-                # Skip past strata that are instances of a different unique layer.
-                while layer < len(stratum_ids) and stratum_ids[layer] != unique:
+                candidates = edge_to_layers[(a, b)]
+                # Skip past strata consistent with none of the layers containing this edge.
+                while layer < len(viable_layers) and not viable_layers[layer] & candidates:
                     layer += 1
-                # Start a new stratum if necessary
-                if layer == len(stratum_ids):
-                    stratum_ids.append(unique)
+                # Start a new stratum if necessary, else narrow the joined stratum's layers
+                if layer == len(viable_layers):
+                    viable_layers.append(set(candidates))
+                else:
+                    viable_layers[layer] &= candidates
             # Specify the stratum the payload instruction is associated with and hard-code 0 to indicate this is a payload stratum.
             keys[i] = (layer, 0)
             # Both qubits are now occupied through this stratum.
@@ -322,14 +325,12 @@ class CheckedCircuit:
         return out
 
 
-def _edge_to_layer(
+def _edge_to_layers(
     payload_layers: Iterable[Iterable[tuple[int, int]]],
-) -> dict[tuple[int, int], int]:
-    """Map each entangling edge to the index of the unique payload layer containing it."""
-    edge_to_layer: dict[tuple[int, int], int] = {}
+) -> dict[tuple[int, int], set[int]]:
+    """Map each entangling edge to the indices of the unique payload layers containing it."""
+    edge_to_layers: dict[tuple[int, int], set[int]] = defaultdict(set)
     for index, layer in enumerate(payload_layers):
         for a, b in layer:
-            edge = (min(a, b), max(a, b))
-            if edge_to_layer.setdefault(edge, index) != index:
-                raise ValueError(f"edge {edge} appears in more than one payload layer.")
-    return edge_to_layer
+            edge_to_layers[(min(a, b), max(a, b))].add(index)
+    return dict(edge_to_layers)
