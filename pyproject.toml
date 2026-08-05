@@ -24,7 +24,7 @@ classifiers = [
 requires-python = ">=3.10"
 
 dependencies = [
-    "qiskit>=2.1.2, <3",
+    "qiskit>=2.3, <3",
     "numpy>=1.26",
     "qiskit-aer>=0.17.1",
     "samplomatic>=0.20.0",
