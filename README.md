@@ -61,8 +61,8 @@ A simple guide to help you get started quickly with this package is available [h
 
 ### Use case examples
 
-This technique has been used to improve the fidelity of samples from Clifford-dominated circuits up to 50 qubits and 2450 entangling gates [[1]](https://arxiv.org/abs/2504.15725).
-
+This technique has been used to improve the fidelity of samples from Clifford-dominated circuits using 97 physical qubits
+to encode 2415 logical entangling gates across 70 logical qubits [[2]](#references).
 ----------------------------------------------------------------------------------------------------
 
 ### Technical discussion
@@ -167,3 +167,5 @@ change, or deprecation will be documented in the [release notes](https://quantum
 ### References
 
 [1] Simon Martiel, Ali Javadi-Abhari, [Low-overhead error detection with spacetime codes](https://arxiv.org/abs/2504.15725), arXiv:2504.15725 [quant-ph].
+
+[2] Simon Martiel, et al., [Sampling hard circuits with verifiably high fidelityh](https://arxiv.org/abs/2607.25941), arXiv:2607.25941 [quant-ph].

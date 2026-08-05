@@ -9,7 +9,7 @@ detected errors can improve the fidelity of states sampled with a quantum proces
 some ancilla qubits and an increase in sampling overhead. This method is particularly suited to
 near-term hardware since it has a much milder overhead in qubits and gates compared to
 fault-tolerant quantum computing, while having a better sampling overhead than error mitigation
-methods such as ZNE or PEC [1]_.
+methods such as ZNE or PEC `[1] <ref1_>`__.
 
 Although spacetime Pauli checks may be used to implement standalone error detection routines, they
 are also relevant in the context of error mitigation and error correction. Error detection can
@@ -29,7 +29,8 @@ A simple guide to help you get started quickly with this package is available in
 Use case examples
 -----------------
 
-This technique has been used to improve the fidelity of samples from Clifford-dominated circuits up to 50 qubits and 2450 entangling gates [1]_.
+This technique has been used to improve the fidelity of samples from Clifford-dominated circuits using 97 physical qubits
+to encode 2415 logical entangling gates across 70 logical qubits `[2] <ref2_>`__.
 
 Technical discussion
 --------------------
@@ -139,7 +140,13 @@ improvement, breaking change, or deprecation will be documented in the `release 
 References
 ----------
 
-.. [1] Simon Martiel, Ali Javadi-Abhari, `Low-overhead error detection with spacetime codes <https://arxiv.org/abs/2504.15725>`_, arXiv:2504.15725 [quant-ph].
+.. _ref1:
+
+1. Simon Martiel, Ali Javadi-Abhari, `Low-overhead error detection with spacetime codes <https://arxiv.org/abs/2504.15725>`_, arXiv:2504.15725 [quant-ph].
+
+.. _ref2:
+
+2. Simon Martiel, et al., `Sampling hard circuits with verifiably high fidelity <https://arxiv.org/abs/2607.25941>`_, arXiv:2607.25941 [quant-ph].
 
 .. toctree::
    :hidden:
