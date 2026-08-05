@@ -63,6 +63,7 @@ A simple guide to help you get started quickly with this package is available [h
 
 This technique has been used to improve the fidelity of samples from Clifford-dominated circuits using 97 physical qubits
 to encode 2415 logical entangling gates across 70 logical qubits [[2]](#references).
+
 ----------------------------------------------------------------------------------------------------
 
 ### Technical discussion
