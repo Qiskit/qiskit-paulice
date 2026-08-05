@@ -181,7 +181,7 @@ class CheckedCircuit:
     ) -> QuantumCircuit:
         """Box :attr:`circuit` while maintaining concurrent scheduling of payload layers.
 
-        This method delimits the entangling layers of the checked circuit with boxes such
+        This method stratifies the entangling layers of the checked circuit into boxes such
         that the number of unique entangling layers is minimized. This is done by scheduling
         the entangling gates from the Pauli checks into boxes of their own, resulting in one
         unique layer per Pauli check in addition to the ``payload_layers``.
