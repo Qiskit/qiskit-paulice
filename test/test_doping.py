@@ -108,84 +108,83 @@ def _checked_circuit() -> CheckedCircuit:
 
 
 class TestDopeCliffordCircuit(unittest.TestCase):
-    """Tests for :func:`dope_clifford_circuit` in distribution-preserving mode."""
+    """Tests for :func:`dope_clifford_circuit`."""
 
-    def test_hadamard_yields_t_magic_state(self):
-        """Doping a bare H produces H;T -- the canonical |T> magic state -- at the only site."""
-        circuit = QuantumCircuit(1)
-        circuit.h(0)
-        doped, sites = dope_clifford_circuit(circuit)
-        self.assertEqual(sites, [DopingSite(qubit=0, after_instruction=0)])
-        self.assertEqual([inst.name for inst in doped], ["h", "t"])
-        np.testing.assert_allclose(
-            Statevector(doped).probabilities(), Statevector(circuit).probabilities(), atol=1e-12
-        )
-        self.assertAlmostEqual(_stabilizer_renyi_2(circuit), 0.0, places=10)
-        # M2 of |T> = -log2((1 + 2*(1/sqrt2)^4)/2) = log2(4/3)
-        self.assertAlmostEqual(_stabilizer_renyi_2(doped), np.log2(4 / 3), places=10)
+    def _assert_irreducible(self, circuit: QuantumCircuit, sites: list[DopingSite]):
+        """Independently verify that no pruning rewrite applies to the returned rotations."""
+        forward = []
+        backward = []
+        for site in sites:
+            gens = _propagated(circuit, site)
+            forward.append(gens[0])
+            backward.append(gens[1])
+        for i, gen in enumerate(forward):
+            if not backward[i].x.any():
+                self.assertFalse(
+                    all(gen.commutes(other) for other in forward[:i]),
+                    msg="trivial rotation commutes into the input",
+                )
+            if not gen.x.any():
+                self.assertFalse(
+                    all(gen.commutes(other) for other in forward[i + 1 :]),
+                    msg="diagonal rotation commutes into the measurement",
+                )
+            for j in range(i + 1, len(forward)):
+                if np.array_equal(gen.x, forward[j].x) and np.array_equal(gen.z, forward[j].z):
+                    self.assertTrue(
+                        any(not gen.commutes(k) for k in forward[i + 1 : j]),
+                        msg="equivalent rotations merge into a Clifford",
+                    )
 
-    def test_distribution_preserved_and_magic_injected(self):
-        """Full doping never disturbs the sampled distribution but always injects magic."""
-        for seed in range(5):
-            circuit = random_clifford(4, seed=seed).to_circuit()
-            doped, sites = dope_clifford_circuit(circuit)
-            self.assertGreater(len(sites), 0, msg=f"seed {seed}")
-            np.testing.assert_allclose(
-                Statevector(doped).probabilities(),
-                Statevector(circuit).probabilities(),
-                atol=1e-12,
-                err_msg=f"seed {seed}",
-            )
-            self.assertAlmostEqual(_stabilizer_renyi_2(circuit), 0.0, places=10, msg=f"seed {seed}")
-            self.assertGreater(_stabilizer_renyi_2(doped), 0.2, msg=f"seed {seed}")
-
-    def test_paper_ansatz(self):
-        """Distribution preservation and magic injection on the paper's brickwork ansatz."""
+    def test_changes_distribution_and_injects_magic(self):
+        """Doping alters the sampled distribution and injects magic."""
         circuit = _paper_ansatz(5, seed=1)
         doped, sites = dope_clifford_circuit(circuit)
-        self.assertGreaterEqual(len(sites), 5)
-        np.testing.assert_allclose(
-            Statevector(doped).probabilities(), Statevector(circuit).probabilities(), atol=1e-12
+        self.assertGreater(len(sites), 0)
+        self.assertFalse(
+            np.allclose(
+                Statevector(doped).probabilities(), Statevector(circuit).probabilities(), atol=1e-6
+            )
         )
-        self.assertGreater(_stabilizer_renyi_2(doped), 1.0)
+        self.assertAlmostEqual(_stabilizer_renyi_2(circuit), 0.0, places=10)
+        self.assertGreater(_stabilizer_renyi_2(doped), 0.5)
 
-    def test_sites_satisfy_paper_criteria(self):
-        """Independent check of every pruning criterion at every returned site."""
-        for seed in range(5):
+    def test_trivial_circuits_have_no_sites(self):
+        """Circuits whose rotations all prune away (bare H, diagonal circuit) yield no site."""
+        h_only = QuantumCircuit(1)
+        h_only.h(0)
+        diagonal = QuantumCircuit(2)
+        diagonal.s(0)
+        diagonal.cz(0, 1)
+        for circuit in (h_only, diagonal):
+            doped, sites = dope_clifford_circuit(circuit)
+            self.assertEqual(sites, [])
+            self.assertEqual(doped.count_ops().get("t", 0), 0)
+        with self.assertRaises(ValueError):
+            dope_clifford_circuit(diagonal, num_t_gates=1)
+
+    def test_sites_are_irreducible(self):
+        """No pruning rewrite of the reference applies to the returned site set."""
+        for seed in range(3):
             circuit = random_clifford(4, seed=seed).to_circuit()
             _, sites = dope_clifford_circuit(circuit)
-            propagated = []
-            for site in sites:
-                forward, backward = _propagated(circuit, site)
-                self.assertFalse(forward.x.any(), msg="forward propagation must be diagonal")
-                self.assertTrue(backward.x.any(), msg="site must not be an input stabilizer")
-                propagated.append(forward.z.tobytes())
-            self.assertEqual(
-                len(propagated), len(set(propagated)), msg="propagated generators must be distinct"
-            )
-
-    def test_diagonal_circuit_has_no_sites(self):
-        """A diagonal Clifford circuit admits no site: every Z is a stabilizer of the state."""
-        circuit = QuantumCircuit(3)
-        circuit.s(0)
-        circuit.cz(0, 1)
-        circuit.z(2)
-        circuit.cz(1, 2)
-        doped, sites = dope_clifford_circuit(circuit)
-        self.assertEqual(sites, [])
-        self.assertEqual(doped.count_ops().get("t", 0), 0)
-        with self.assertRaises(ValueError):
-            dope_clifford_circuit(circuit, num_t_gates=1)
+            self.assertGreater(len(sites), 0, msg=f"seed {seed}")
+            self._assert_irreducible(circuit, sites)
+        circuit = _paper_ansatz(4, seed=2)
+        _, sites = dope_clifford_circuit(circuit)
+        self._assert_irreducible(circuit, sites)
 
     def test_num_t_gates_and_seed(self):
-        """num_t_gates is honored exactly, selection is seed-reproducible, excess raises."""
-        circuit = random_clifford(4, seed=0).to_circuit()
+        """Random subsets are exact in size, seed-reproducible, and themselves irreducible."""
+        circuit = _paper_ansatz(4, seed=0)
         _, all_sites = dope_clifford_circuit(circuit)
-        doped, sites = dope_clifford_circuit(circuit, num_t_gates=2, seed=123)
-        self.assertEqual(len(sites), 2)
-        self.assertEqual(doped.count_ops()["t"], 2)
+        self.assertGreater(len(all_sites), 3)
+        doped, sites = dope_clifford_circuit(circuit, num_t_gates=3, seed=42)
+        self.assertEqual(len(sites), 3)
+        self.assertEqual(doped.count_ops()["t"], 3)
         self.assertTrue(set(sites) <= set(all_sites))
-        _, again = dope_clifford_circuit(circuit, num_t_gates=2, seed=123)
+        self._assert_irreducible(circuit, sites)
+        _, again = dope_clifford_circuit(circuit, num_t_gates=3, seed=42)
         self.assertEqual(sites, again)
         with self.assertRaises(ValueError):
             dope_clifford_circuit(circuit, num_t_gates=len(all_sites) + 1)
@@ -216,121 +215,33 @@ class TestDopeCliffordCircuit(unittest.TestCase):
 
     def test_barriers_ignored(self):
         """Barriers are transparent to the propagation and preserved in the output."""
-        circuit = QuantumCircuit(2)
-        circuit.h(0)
+        circuit = _paper_ansatz(3, seed=1)
         circuit.barrier()
-        circuit.cx(0, 1)
+        circuit.sx(0)
         doped, sites = dope_clifford_circuit(circuit)
         self.assertGreater(len(sites), 0)
         self.assertIn("barrier", doped.count_ops())
-        np.testing.assert_allclose(
-            Statevector(doped).probabilities(), Statevector(circuit).probabilities(), atol=1e-12
-        )
+        self.assertEqual(doped.count_ops()["t"], len(sites))
+        self.assertEqual(len(doped), len(circuit) + len(sites))
 
     def test_measured_circuit(self):
         """Terminal measurements are preserved and no site lies past a qubit's measurement."""
-        circuit = QuantumCircuit(2, 2)
-        circuit.h(0)
-        circuit.cx(0, 1)
-        circuit.measure(0, 0)
-        circuit.h(1)
-        circuit.measure(1, 1)
-        measure_pos = {0: 2, 1: 4}
+        circuit = _paper_ansatz(3, seed=1)
+        circuit.measure_all()
+        measure_pos = {
+            circuit.find_bit(inst.qubits[0]).index: index
+            for index, inst in enumerate(circuit.data)
+            if inst.operation.name == "measure"
+        }
         doped, sites = dope_clifford_circuit(circuit)
         self.assertGreater(len(sites), 0)
-        self.assertEqual(doped.count_ops()["measure"], 2)
+        self.assertEqual(doped.count_ops()["measure"], 3)
         self.assertEqual(doped.count_ops()["t"], len(sites))
         for site in sites:
             self.assertLessEqual(_position(site), measure_pos[site.qubit])
         circuit.x(0)
         with self.assertRaises(ValueError):
             dope_clifford_circuit(circuit)
-
-
-class TestXebMode(unittest.TestCase):
-    """Tests for :func:`dope_clifford_circuit` with ``preserve_distribution=False``."""
-
-    def _assert_irreducible(self, circuit: QuantumCircuit, sites: list[DopingSite]):
-        """Independently verify that no pruning rewrite applies to the returned rotations."""
-        forward = []
-        backward = []
-        for site in sites:
-            gens = _propagated(circuit, site)
-            forward.append(gens[0])
-            backward.append(gens[1])
-        for i, gen in enumerate(forward):
-            if not backward[i].x.any():
-                self.assertFalse(
-                    all(gen.commutes(other) for other in forward[:i]),
-                    msg="trivial rotation commutes into the input",
-                )
-            if not gen.x.any():
-                self.assertFalse(
-                    all(gen.commutes(other) for other in forward[i + 1 :]),
-                    msg="diagonal rotation commutes into the measurement",
-                )
-            for j in range(i + 1, len(forward)):
-                if np.array_equal(gen.x, forward[j].x) and np.array_equal(gen.z, forward[j].z):
-                    self.assertTrue(
-                        any(not gen.commutes(k) for k in forward[i + 1 : j]),
-                        msg="equivalent rotations merge into a Clifford",
-                    )
-
-    def test_changes_distribution_and_injects_magic(self):
-        """XEB doping alters the sampled distribution and injects magic."""
-        circuit = _paper_ansatz(5, seed=1)
-        doped, sites = dope_clifford_circuit(circuit, preserve_distribution=False)
-        self.assertGreater(len(sites), 0)
-        self.assertFalse(
-            np.allclose(
-                Statevector(doped).probabilities(), Statevector(circuit).probabilities(), atol=1e-6
-            )
-        )
-        self.assertGreater(_stabilizer_renyi_2(doped), 0.5)
-
-    def test_trivial_circuits_have_no_sites(self):
-        """Circuits whose rotations all prune away (bare H, diagonal circuit) yield no site."""
-        h_only = QuantumCircuit(1)
-        h_only.h(0)
-        diagonal = QuantumCircuit(2)
-        diagonal.s(0)
-        diagonal.cz(0, 1)
-        for circuit in (h_only, diagonal):
-            doped, sites = dope_clifford_circuit(circuit, preserve_distribution=False)
-            self.assertEqual(sites, [])
-            self.assertEqual(doped.count_ops().get("t", 0), 0)
-
-    def test_sites_are_irreducible(self):
-        """No pruning rewrite of the reference applies to the returned site set."""
-        for seed in range(3):
-            circuit = random_clifford(4, seed=seed).to_circuit()
-            _, sites = dope_clifford_circuit(circuit, preserve_distribution=False)
-            self.assertGreater(len(sites), 0, msg=f"seed {seed}")
-            self._assert_irreducible(circuit, sites)
-        circuit = _paper_ansatz(4, seed=2)
-        _, sites = dope_clifford_circuit(circuit, preserve_distribution=False)
-        self._assert_irreducible(circuit, sites)
-
-    def test_num_t_gates_and_seed(self):
-        """Random subsets are exact in size, seed-reproducible, and themselves irreducible."""
-        circuit = _paper_ansatz(4, seed=0)
-        _, all_sites = dope_clifford_circuit(circuit, preserve_distribution=False)
-        self.assertGreater(len(all_sites), 3)
-        doped, sites = dope_clifford_circuit(
-            circuit, num_t_gates=3, preserve_distribution=False, seed=42
-        )
-        self.assertEqual(len(sites), 3)
-        self.assertEqual(doped.count_ops()["t"], 3)
-        self.assertTrue(set(sites) <= set(all_sites))
-        self._assert_irreducible(circuit, sites)
-        _, again = dope_clifford_circuit(
-            circuit, num_t_gates=3, preserve_distribution=False, seed=42
-        )
-        self.assertEqual(sites, again)
-        with self.assertRaises(ValueError):
-            dope_clifford_circuit(
-                circuit, num_t_gates=len(all_sites) + 1, preserve_distribution=False
-            )
 
 
 class TestCheckedCircuitDoping(unittest.TestCase):
@@ -366,32 +277,18 @@ class TestCheckedCircuitDoping(unittest.TestCase):
                 cumulant = Pauli(label).evolve(suffix, frame="h")
                 self.assertTrue(cumulant.commutes(site_z))
 
-    def test_preserving_mode(self):
-        """Distribution-preserving doping keeps the full output distribution and the code."""
+    def test_code_preserved(self):
+        """Doping changes the payload distribution but never breaks a check."""
         checked = _checked_circuit()
         self.assertEqual(len(checked.check_qubits), 1)
         doped, sites = dope_clifford_circuit(checked)
-        self.assertGreater(len(sites), 0)
-        self._assert_code_preserved(checked, doped, sites)
-        np.testing.assert_allclose(
-            Statevector(doped.circuit.remove_final_measurements(inplace=False)).probabilities(),
-            Statevector(checked.circuit.remove_final_measurements(inplace=False)).probabilities(),
-            atol=1e-12,
-        )
-
-    def test_xeb_mode(self):
-        """XEB doping changes the payload distribution but never breaks a check."""
-        checked = _checked_circuit()
-        doped, sites = dope_clifford_circuit(checked, preserve_distribution=False)
         self.assertGreater(len(sites), 0)
         self._assert_code_preserved(checked, doped, sites)
 
     def test_hardware_style_template(self):
         """A parametric after-entangling template keeps every syndrome at any angles."""
         checked = _checked_circuit()
-        doped, sites = dope_clifford_circuit(
-            checked, preserve_distribution=False, after_entangling_only=True, parametric=True
-        )
+        doped, sites = dope_clifford_circuit(checked, after_entangling_only=True, parametric=True)
         self.assertGreater(len(sites), 0)
         for site in sites:
             inst = checked.circuit.data[site.after_instruction]
@@ -408,27 +305,18 @@ class TestHardwareStyle(unittest.TestCase):
     def test_after_entangling_only(self):
         """Sites are restricted to wires directly following an entangling gate."""
         circuit = _paper_ansatz(5, seed=1)
-        for preserve in (True, False):
-            _, all_sites = dope_clifford_circuit(circuit, preserve_distribution=preserve)
-            doped, sites = dope_clifford_circuit(
-                circuit, preserve_distribution=preserve, after_entangling_only=True
-            )
-            self.assertGreater(len(sites), 0, msg=f"preserve {preserve}")
-            self.assertLessEqual(len(sites), len(all_sites))
-            for site in sites:
-                inst = circuit.data[site.after_instruction]
-                self.assertGreater(inst.operation.num_qubits, 1)
-                self.assertIn(site.qubit, [circuit.find_bit(q).index for q in inst.qubits])
-            if preserve:
-                np.testing.assert_allclose(
-                    Statevector(doped).probabilities(),
-                    Statevector(circuit).probabilities(),
-                    atol=1e-12,
-                )
+        _, all_sites = dope_clifford_circuit(circuit)
+        doped, sites = dope_clifford_circuit(circuit, after_entangling_only=True)
+        self.assertGreater(len(sites), 0)
+        self.assertLessEqual(len(sites), len(all_sites))
+        self.assertEqual(doped.count_ops()["t"], len(sites))
+        for site in sites:
+            inst = circuit.data[site.after_instruction]
+            self.assertGreater(inst.operation.num_qubits, 1)
+            self.assertIn(site.qubit, [circuit.find_bit(q).index for q in inst.qubits])
 
     def test_parametric_template(self):
-        """One template reproduces T doping at pi/4, the base circuit at 0, and always
-        preserves the distribution in distribution-preserving mode."""
+        """One template reproduces T doping at pi/4 and the base circuit at 0."""
         circuit = _paper_ansatz(4, seed=1)
         template, sites = dope_clifford_circuit(circuit, parametric=True)
         self.assertEqual(len(template.parameters), len(sites))
@@ -438,12 +326,6 @@ class TestHardwareStyle(unittest.TestCase):
         self.assertTrue(Statevector(bound).equiv(Statevector(t_doped)))
         zero = template.assign_parameters([0.0] * len(sites))
         self.assertTrue(Statevector(zero).equiv(Statevector(circuit)))
-        angles = np.random.default_rng(5).uniform(0, 2 * np.pi, len(sites))
-        np.testing.assert_allclose(
-            Statevector(template.assign_parameters(angles)).probabilities(),
-            Statevector(circuit).probabilities(),
-            atol=1e-12,
-        )
 
 
 if __name__ == "__main__":

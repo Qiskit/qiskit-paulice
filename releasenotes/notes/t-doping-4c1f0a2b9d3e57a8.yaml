@@ -3,10 +3,9 @@ features:
   - |
     Added the new :func:`qiskit_paulice.doping.dope_clifford_circuit` function, which inserts
     magic-injecting ``T`` gates into a Clifford circuit at wires classified via the spacetime
-    stabilizer formalism (`arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`__, Sec. S1.3).
-    The default mode preserves the sampled computational-basis distribution exactly, while
-    ``preserve_distribution=False`` implements the reference's distribution-changing selection
-    with its iterated pruning rewrites (the XEB regime). When given a
+    stabilizer formalism (`arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`__, Sec. S1.3),
+    implementing the reference's site selection with its iterated pruning rewrites so that
+    every inserted rotation is an irreducible non-Clifford rotation. When given a
     :class:`qiskit_paulice.CheckedCircuit`, doping is restricted to wires commuting with every
     check's back-cumulant, so the spacetime code and its post-selection are preserved. Doped
     wires are reported as :class:`qiskit_paulice.doping.DopingSite` instances. For

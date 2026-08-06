@@ -42,7 +42,6 @@ def dope_clifford_circuit(
     circuit: QuantumCircuit | CheckedCircuit,
     num_t_gates: int | None = None,
     *,
-    preserve_distribution: bool = True,
     after_entangling_only: bool = False,
     parametric: bool = False,
     seed: int | np.random.Generator | None = None,
@@ -51,40 +50,27 @@ def dope_clifford_circuit(
 
     Each candidate wire is classified by conjugating the ``Z`` generator of a ``T`` placed
     there through the surrounding Clifford gates
-    (`arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`_, Sec. S1.3):
-
-    * ``preserve_distribution=True``: keep only sites whose generator is diagonal at the
-      circuit output. Every inserted rotation then commutes with the ``Z`` measurements, so
-      the doped circuit samples *exactly* the same distribution as ``circuit`` while its
-      output state gains magic. Sites whose generator back-propagates to a diagonal at the
-      input inject no magic and are dropped; sites with equal propagated generators would
-      merge into a Clifford ``S``, so only the earliest is kept. Kept generators mutually
-      commute, so the reference's pruning rewrites are provably already at their fixed point.
-    * ``preserve_distribution=False`` (XEB mode): keep distribution-changing rotations
-      instead, iterating the reference's three pruning rewrites to a fixed point: remove a
-      rotation that commutes with all previous rotations and back-propagates to a diagonal at
-      the input (trivial), or commutes with all following rotations and forward-propagates to
-      a diagonal at the output (invisible to sampling); merge equal-generator pairs that
-      commute with every rotation between them, keeping the earliest (the reference removes
-      one at random).
-
-    Either way, each returned site contributes an irreducible non-Clifford rotation.
+    (`arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`_, Sec. S1.3). Every wire segment
+    is a candidate, and the reference's three pruning rewrites are iterated to a fixed
+    point: remove a rotation that commutes with all previous rotations and back-propagates
+    to a diagonal at the input (it acts trivially on :math:`|0^n\rangle`), or commutes with
+    all following rotations and forward-propagates to a diagonal at the output (it is
+    invisible to sampling); merge equal-generator pairs that commute with every rotation
+    between them, keeping the earliest (the reference removes one at random). Each returned
+    site therefore contributes an irreducible non-Clifford rotation.
 
     A :class:`.CheckedCircuit` input restricts sites to payload wires where a ``Z`` error is
     undetected by every check (cf. :attr:`.CheckedCircuit.uncovered_paulis`), so all
-    syndromes remain deterministic and post-selection is unaffected -- automatic in
-    distribution-preserving mode, a real filter in XEB mode. A new :class:`.CheckedCircuit`
-    with the same check metadata is returned.
+    syndromes remain deterministic and post-selection is unaffected. A new
+    :class:`.CheckedCircuit` with the same check metadata is returned.
 
     Args:
         circuit: The Clifford circuit to dope, or a :class:`.CheckedCircuit` whose spacetime
             code the doping must preserve. Barriers and terminal measurements are ignored;
             sites past a qubit's measurement are excluded.
         num_t_gates: Number of ``T`` gates to insert, drawn uniformly from the valid sites;
-            ``None`` uses every valid site. In XEB mode, pruned-away draws are redrawn until
-            ``num_t_gates`` irreducible sites remain.
-        preserve_distribution: Select distribution-preserving (``True``) or
-            distribution-changing (``False``) rotations.
+            ``None`` uses every valid site. A drawn subset may itself be further reducible;
+            pruned-away draws are redrawn until ``num_t_gates`` irreducible sites remain.
         after_entangling_only: Restrict sites to wires directly following an entangling
             gate, as in the reference: a ``Z`` rotation there merges into the following
             single-qubit layer as a zero-cost virtual ``RZ``, so every doping configuration
@@ -92,8 +78,8 @@ def dope_clifford_circuit(
         parametric: Insert ``rz(dope[i])`` rotations (``dope[i]`` at ``sites[i]``) instead
             of ``T`` gates: one template covers every doping configuration
             (:math:`\pi/4` = ``T``, :math:`\pi/2` = ``S``, :math:`\pi` = ``Z``, ``0`` =
-            identity). Every assignment preserves the code and, in distribution-preserving
-            mode, the sampled distribution.
+            identity), and every assignment preserves the code of a
+            :class:`.CheckedCircuit`.
         seed: Seed or generator for the random site selection.
 
     Returns:
@@ -103,8 +89,8 @@ def dope_clifford_circuit(
 
     Raises:
         ValueError: ``circuit`` contains a non-Clifford instruction or a non-terminal
-            measurement, ``num_t_gates`` is out of range, or (in XEB mode) no irreducible
-            subset of that size could be drawn.
+            measurement, ``num_t_gates`` is out of range, or no irreducible subset of that
+            size could be drawn.
     """
     checked = None
     if isinstance(circuit, CheckedCircuit):
@@ -120,22 +106,14 @@ def dope_clifford_circuit(
     input_diagonal = ~gens.evolve(full_clifford, frame="h").x.any(axis=1)
     output_diagonal = np.asarray(~gens.x.any(axis=1))
 
-    if preserve_distribution:
-        # Kept generators are diagonal at the output, hence mutually commute: pruning is at
-        # its fixed point and reduces to keeping the earliest site per generator class.
-        classes: dict[bytes, int] = {}
-        for i in np.flatnonzero(output_diagonal & ~input_diagonal):
-            classes.setdefault(gens.z[i].tobytes(), int(i))
-        valid = sorted(classes.values())
-    else:
-        # A wire preserves a check iff Z there commutes with the check's back-cumulant. By
-        # conjugation through the suffix, that is the commutation of the forward-propagated
-        # generator with the check's syndrome operator, a Z-product on its support.
-        active = np.ones(len(gens), dtype=bool)
-        for support in checked.check_support if checked else ():
-            active &= gens.x[:, list(support)].sum(axis=1) % 2 == 0
-        _prune_to_fixpoint(gens, input_diagonal, output_diagonal, active)
-        valid = [int(i) for i in np.flatnonzero(active)]
+    # A wire preserves a check iff Z there commutes with the check's back-cumulant. By
+    # conjugation through the suffix, that is the commutation of the forward-propagated
+    # generator with the check's syndrome operator, a Z-product on its support.
+    active = np.ones(len(gens), dtype=bool)
+    for support in checked.check_support if checked else ():
+        active &= gens.x[:, list(support)].sum(axis=1) % 2 == 0
+    _prune_to_fixpoint(gens, input_diagonal, output_diagonal, active)
+    valid = [int(i) for i in np.flatnonzero(active)]
 
     if num_t_gates is None:
         chosen_idx = valid
@@ -145,24 +123,21 @@ def dope_clifford_circuit(
             f"sites ({len(valid)})."
         )
     else:
+        # A subset of a fixed point need not be one: re-prune each draw and top up.
         rng = np.random.default_rng(seed)
-        if preserve_distribution:
-            chosen_idx = [valid[i] for i in rng.choice(len(valid), num_t_gates, replace=False)]
-        else:
-            # A subset of a fixed point need not be one: re-prune each draw and top up.
-            pool = [valid[i] for i in rng.permutation(len(valid))]
-            selected = np.zeros(len(gens), dtype=bool)
-            while need := num_t_gates - int(selected.sum()):
-                if not pool:
-                    raise ValueError(
-                        f"Could only draw {int(selected.sum())} irreducible doping sites of "
-                        f"the requested {num_t_gates}; request fewer T gates or pass "
-                        "num_t_gates=None."
-                    )
-                selected[pool[:need]] = True
-                del pool[:need]
-                _prune_to_fixpoint(gens, input_diagonal, output_diagonal, selected)
-            chosen_idx = [int(i) for i in np.flatnonzero(selected)]
+        pool = [valid[i] for i in rng.permutation(len(valid))]
+        selected = np.zeros(len(gens), dtype=bool)
+        while need := num_t_gates - int(selected.sum()):
+            if not pool:
+                raise ValueError(
+                    f"Could only draw {int(selected.sum())} irreducible doping sites of "
+                    f"the requested {num_t_gates}; request fewer T gates or pass "
+                    "num_t_gates=None."
+                )
+            selected[pool[:need]] = True
+            del pool[:need]
+            _prune_to_fixpoint(gens, input_diagonal, output_diagonal, selected)
+        chosen_idx = [int(i) for i in np.flatnonzero(selected)]
 
     chosen = sorted((int(positions[i]), int(qubits[i])) for i in chosen_idx)
     inserts: dict[int, list[int]] = {}
