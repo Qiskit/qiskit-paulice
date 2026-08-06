@@ -24,8 +24,12 @@ from qiskit import QuantumCircuit
 from qiskit.quantum_info import Clifford, Pauli
 from qiskit.transpiler.passes import RemoveBarriers
 from qiskit_paulice import CheckedCircuit, UncoveredPauli, add_pauli_checks, dope_clifford_circuit
-from qiskit_paulice.checked_circuit import BOXING_DEFAULTS
-from qiskit_paulice.noise_models import NoiseModel
+from qiskit_paulice._internal import NoiseModel as _RustNoiseModel
+from qiskit_paulice._internal.conversion import (
+    convert_to_rustiq_circuit as _convert_to_rustiq_circuit,
+)
+from qiskit_paulice.checked_circuit import BOXING_DEFAULTS, _fault_channels
+from qiskit_paulice.noise_models import NoiseModel, _convert_gate_wise_noise
 from samplomatic.annotations import InjectNoise
 from samplomatic.transpiler import generate_boxing_pass_manager
 from samplomatic.utils import get_annotation
@@ -394,13 +398,14 @@ class TestEstimateFaultRates(unittest.TestCase):
         circuit = checked.circuit
         edges = sorted(
             {
-                tuple(sorted(circuit.find_bit(q).index for q in inst.qubits))
+                tuple(circuit.find_bit(q).index for q in inst.qubits)
                 for inst in circuit.data
                 if len(inst.qubits) == 2
             }
         )
-        # Nonzero generators on three edges keep the enumeration small; every other edge is
-        # listed explicitly (rate 0) so the median fallback never fires.
+        # The Rust model looks edges up in native gate-qubit order. Nonzero generators on
+        # three edges keep the enumeration small; every other edge is listed explicitly
+        # (rate 0) so the median fallback never fires.
         rates = {edges[0]: [("XZ", 0.004), ("ZY", 0.007)], edges[1]: [("YX", 0.006)]}
         rates[edges[-1]] = [("XX", 0.005)]
         noise = NoiseModel(
@@ -426,7 +431,7 @@ class TestEstimateFaultRates(unittest.TestCase):
         for k, inst in enumerate(unitaries):
             if len(inst.qubits) != 2:
                 continue
-            qargs = sorted(circuit.find_bit(q).index for q in inst.qubits)
+            qargs = [circuit.find_bit(q).index for q in inst.qubits]
             prefix = QuantumCircuit(num_qubits)
             suffix = QuantumCircuit(num_qubits)
             for j, other in enumerate(unitaries):
@@ -552,13 +557,43 @@ class TestEstimateFaultRates(unittest.TestCase):
         self.assertLess(strong.acceptance_rate, weak.acceptance_rate)
         self.assertGreater(strong.harmless_rate, weak.harmless_rate)
 
+    def test_layered_noise(self):
+        """Layered gate noise resolves through the Rust noise models."""
+        checked = _checked_example(nq=3, depth=2)[0]  # layered noise needs a CZ-based circuit
+        circuit = checked.circuit
+        num_qubits = circuit.num_qubits
+
+        # One single-edge layer per payload brickwork layer, with full-width generators in
+        # qiskit label convention (rightmost character is qubit 0); the ancilla coupling
+        # edge is absent, exercising the Rust marginal-median inference.
+        def _label(edge, paulis):
+            chars = ["I"] * num_qubits
+            chars[edge[0]] = paulis[0]
+            chars[edge[1]] = paulis[1]
+            return "".join(reversed(chars))
+
+        noise = NoiseModel(
+            gate_noise={
+                ((0, 1),): [(_label((0, 1), "XX"), 0.005), ("I" * (num_qubits - 1) + "Z", 0.01)],
+                ((1, 2),): [(_label((1, 2), "ZZ"), 0.007)],
+            }
+        )
+        layered = checked.estimate_fault_rates(noise, shots=50_000, seed=4)
+        self.assertLess(layered.acceptance_rate, 1.0)
+        self.assertTrue(all(0 <= rate <= 1 for rate in layered.check_trigger_rates))
+        self.assertEqual(layered, checked.estimate_fault_rates(noise, shots=50_000, seed=4))
+        with self.assertRaisesRegex(ValueError, "CZ-based"):
+            self._checked().estimate_fault_rates(NoiseModel(gate_noise={((0, 1),): []}))
+        with self.assertRaisesRegex(ValueError, "matching"):
+            checked.estimate_fault_rates(NoiseModel(gate_noise={((0, 1), (1, 2)): []}))
+
     def test_validation_errors(self):
-        """Empty, layered, idling, out-of-range-readout, and doped inputs are rejected."""
+        """Empty, malformed, idling, out-of-range-readout, and doped inputs are rejected."""
         checked = self._checked()
         with self.assertRaises(ValueError):
             checked.estimate_fault_rates(NoiseModel())
         with self.assertRaises(ValueError):
-            checked.estimate_fault_rates(NoiseModel(gate_noise={((0, 1),): [("XZII", 0.01)]}))
+            checked.estimate_fault_rates(NoiseModel(gate_noise="bogus"))
         with self.assertRaises(ValueError):
             checked.estimate_fault_rates(NoiseModel(gate_noise=1e-3, idling_noise=1e-4))
         with self.assertRaises(ValueError):
@@ -566,3 +601,42 @@ class TestEstimateFaultRates(unittest.TestCase):
         doped, _ = dope_clifford_circuit(checked)
         with self.assertRaises(ValueError):
             doped.estimate_fault_rates(NoiseModel(gate_noise=1e-3))
+
+
+class TestCoverageConsistency(unittest.TestCase):
+    """The Rust coverage in ``uncovered_paulis`` and the Python fault sweep agree."""
+
+    def test_uncovered_iff_zero_syndrome_signature(self):
+        """A single-qubit fault after a 2q gate is uncovered iff no check detects it."""
+        checked = _checked_example(nq=3, depth=3)[0]
+        circuit = checked.circuit
+        singles = ["XI", "YI", "ZI", "IX", "IY", "IZ"]
+        edges = {
+            tuple(circuit.find_bit(q).index for q in inst.qubits)
+            for inst in circuit.data
+            if len(inst.qubits) == 2
+        }
+        gate_noise = _convert_gate_wise_noise({e: [(p, 0.01) for p in singles] for e in edges})
+        rates, x_img, _, _ = _fault_channels(circuit, [_RustNoiseModel.gate_wise(gate_noise)])
+
+        masks = np.zeros((len(checked.check_support), circuit.num_qubits), dtype=np.uint8)
+        for row, support in zip(masks, checked.check_support, strict=True):
+            row[list(support)] = 1
+        signatures = x_img.astype(np.uint8) @ masks.T % 2
+
+        # Replay the Rust model's forward channel order, mapping rustiq gate indices back
+        # to qiskit instruction indices with the shared conversion map.
+        gates, indices = _convert_to_rustiq_circuit(circuit)
+        locations = []
+        for rustiq_index, (_, qubits) in enumerate(gates):
+            if len(qubits) != 2:
+                continue
+            for pair in singles:
+                qubit = qubits[0] if pair[1] == "I" else qubits[1]
+                locations.append((qubit, indices[rustiq_index], pair.strip("I")))
+        self.assertEqual(len(locations), len(rates))
+
+        uncovered = {(u.qubit, u.after_instruction, u.pauli) for u in checked.uncovered_paulis}
+        self.assertGreater(len(uncovered), 0)
+        for location, signature in zip(locations, signatures, strict=True):
+            self.assertEqual(not signature.any(), location in uncovered, msg=str(location))

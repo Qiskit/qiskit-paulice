@@ -49,86 +49,62 @@ def dope_clifford_circuit(
 ) -> tuple[QuantumCircuit, list[DopingSite]] | tuple[CheckedCircuit, list[DopingSite]]:
     r"""Insert magic-injecting ``T`` gates into a Clifford circuit.
 
-    A ``T`` gate on a wire is the rotation :math:`e^{-i \pi Z / 8}` (up to global phase);
-    conjugating its ``Z`` generator through the Clifford gates on either side of the wire
-    classifies the site (`arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`_, Sec. S1.3).
-    Two doping modes are supported:
+    Each candidate wire is classified by conjugating the ``Z`` generator of a ``T`` placed
+    there through the surrounding Clifford gates
+    (`arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`_, Sec. S1.3):
 
-    * **Distribution preserving** (``preserve_distribution=True``): a site is kept only if its
-      generator propagated forward to the circuit output is diagonal (``I``/``Z``). Every
-      inserted rotation is then a diagonal unitary commuting with ``Z`` measurements, so the
-      doped circuit samples *exactly* the same computational-basis distribution as ``circuit``
-      while its output state gains magic. Sites whose generator back-propagates to a diagonal
-      on the input are discarded (the rotation acts as a global phase on :math:`|0^n\rangle`
-      and injects no magic), and sites with coinciding propagated generators are deduplicated,
-      keeping the earliest (two ``T`` gates on one propagated generator merge into a Clifford
-      ``S``). Because all kept generators are diagonal at the output they mutually commute, so
-      the pruning rewrites of the reference are provably already at their fixed point and each
-      kept ``T`` is an irreducible non-Clifford rotation.
+    * ``preserve_distribution=True``: keep only sites whose generator is diagonal at the
+      circuit output. Every inserted rotation then commutes with the ``Z`` measurements, so
+      the doped circuit samples *exactly* the same distribution as ``circuit`` while its
+      output state gains magic. Sites whose generator back-propagates to a diagonal at the
+      input inject no magic and are dropped; sites with equal propagated generators would
+      merge into a Clifford ``S``, so only the earliest is kept. Kept generators mutually
+      commute, so the reference's pruning rewrites are provably already at their fixed point.
+    * ``preserve_distribution=False`` (XEB mode): keep distribution-changing rotations
+      instead, iterating the reference's three pruning rewrites to a fixed point: remove a
+      rotation that commutes with all previous rotations and back-propagates to a diagonal at
+      the input (trivial), or commutes with all following rotations and forward-propagates to
+      a diagonal at the output (invisible to sampling); merge equal-generator pairs that
+      commute with every rotation between them, keeping the earliest (the reference removes
+      one at random).
 
-    * **XEB mode** (``preserve_distribution=False``): the selection of the reference is
-      implemented instead, producing rotations that *change* the sampled distribution (the
-      regime used for cross-entropy benchmarking). Every wire segment is a candidate, and the
-      reference's three pruning rewrites are iterated to a fixed point: a rotation is removed
-      if it commutes with all previous rotations and back-propagates to a diagonal on the
-      input (it acts trivially), or commutes with all following rotations and forward-propagates
-      to a diagonal on the output (it commutes into the final measurements); and of two
-      rotations with equal propagated generators commuting with every rotation between them,
-      only the earliest is kept (the pair would merge into a Clifford ``S``). Each returned
-      site therefore contributes an irreducible non-Clifford rotation. Unlike the reference,
-      which removes one member of a mergeable pair at random, the earliest is kept
-      deterministically; the reference's restriction of candidates to wires directly
-      following entangling gates is available via ``after_entangling_only``.
+    Either way, each returned site contributes an irreducible non-Clifford rotation.
 
-    When ``circuit`` is a :class:`.CheckedCircuit`, doping preserves its spacetime code: a
-    wire is a valid site only if a ``Z`` on it commutes with the back-cumulant of every check,
-    so all check syndromes remain deterministic in the doped circuit and post-selection is
-    unaffected. Check ancilla wires are never doped. In distribution-preserving mode the
-    constraint is automatically satisfied; in XEB mode it filters the candidate wires. The
-    first return value is then a new :class:`.CheckedCircuit` wrapping the doped circuit with
-    the same check metadata.
+    A :class:`.CheckedCircuit` input restricts sites to payload wires where a ``Z`` error is
+    undetected by every check (cf. :attr:`.CheckedCircuit.uncovered_paulis`), so all
+    syndromes remain deterministic and post-selection is unaffected -- automatic in
+    distribution-preserving mode, a real filter in XEB mode. A new :class:`.CheckedCircuit`
+    with the same check metadata is returned.
 
     Args:
         circuit: The Clifford circuit to dope, or a :class:`.CheckedCircuit` whose spacetime
-            code the doping must preserve. Any instruction convertible to a
-            `Clifford <https://quantum.cloud.ibm.com/docs/en/api/qiskit/qiskit.quantum_info.Clifford>`_
-            is supported; barriers and terminal measurements are ignored (sites after a
-            qubit's measurement are excluded).
-        num_t_gates: The number of ``T`` gates to insert, drawn uniformly without replacement
-            from the valid sites. ``None`` inserts a ``T`` at every valid site. In XEB mode a
-            randomly drawn subset may itself be further reducible; sites are then redrawn
-            until ``num_t_gates`` irreducible sites are reached.
-        preserve_distribution: Whether to keep the sampled distribution exactly unchanged
-            (``True``) or to select distribution-changing rotations as in the reference
-            (``False``).
+            code the doping must preserve. Barriers and terminal measurements are ignored;
+            sites past a qubit's measurement are excluded.
+        num_t_gates: Number of ``T`` gates to insert, drawn uniformly from the valid sites;
+            ``None`` uses every valid site. In XEB mode, pruned-away draws are redrawn until
+            ``num_t_gates`` irreducible sites remain.
+        preserve_distribution: Select distribution-preserving (``True``) or
+            distribution-changing (``False``) rotations.
         after_entangling_only: Restrict sites to wires directly following an entangling
-            (multi-qubit) gate, as in the reference. On hardware these wires sit inside the
-            single-qubit layer that follows the entangling layer, so an inserted ``Z``
-            rotation merges into it as a zero-cost virtual-``RZ`` phase and every doping
-            configuration of one circuit shares a single pulse schedule.
-        parametric: Insert ``rz(dope[i])`` rotations from a ``dope``
-            `ParameterVector <https://quantum.cloud.ibm.com/docs/en/api/qiskit/qiskit.circuit.ParameterVector>`_
-            (``dope[i]`` at ``sites[i]``) instead of ``T`` gates, yielding one template
-            circuit for every doping configuration: bind :math:`\pi/4` for ``T``,
-            :math:`\pi/2` for ``S``, :math:`\pi` for ``Z``, or ``0`` for identity. In
-            distribution-preserving mode every assignment preserves the sampled distribution
-            (all rotations remain diagonal), and on a :class:`.CheckedCircuit` every
-            assignment preserves the code; the XEB-mode irreducibility guarantee applies to
-            non-Clifford values.
-        seed: A seed or generator for the random site selection. Unused when ``num_t_gates``
-            is ``None``.
+            gate, as in the reference: a ``Z`` rotation there merges into the following
+            single-qubit layer as a zero-cost virtual ``RZ``, so every doping configuration
+            shares one pulse schedule.
+        parametric: Insert ``rz(dope[i])`` rotations (``dope[i]`` at ``sites[i]``) instead
+            of ``T`` gates: one template covers every doping configuration
+            (:math:`\pi/4` = ``T``, :math:`\pi/2` = ``S``, :math:`\pi` = ``Z``, ``0`` =
+            identity). Every assignment preserves the code and, in distribution-preserving
+            mode, the sampled distribution.
+        seed: Seed or generator for the random site selection.
 
     Returns:
-            * **QuantumCircuit | CheckedCircuit** -- A copy of ``circuit`` with ``T`` gates
-              (or parametric ``RZ`` rotations) inserted (a :class:`.CheckedCircuit` when one
-              was given)
+            * **QuantumCircuit | CheckedCircuit** -- A copy of ``circuit`` with the rotations
+              inserted
             * **list[DopingSite]** -- The doped sites, sorted by circuit position
 
     Raises:
         ValueError: ``circuit`` contains a non-Clifford instruction or a non-terminal
-            measurement.
-        ValueError: ``num_t_gates`` is negative, exceeds the number of valid sites, or (in
-            XEB mode) no subset of ``num_t_gates`` irreducible sites could be drawn.
+            measurement, ``num_t_gates`` is out of range, or (in XEB mode) no irreducible
+            subset of that size could be drawn.
     """
     checked = None
     if isinstance(circuit, CheckedCircuit):
@@ -212,21 +188,19 @@ def dope_clifford_circuit(
 def _sweep_wire_segments(
     circuit: QuantumCircuit, site_qubits: set[int], entangling_only: bool
 ) -> tuple[np.ndarray, np.ndarray, PauliList, Clifford]:
-    """Enumerate candidate doping sites, one per wire segment, with propagated generators.
+    """Enumerate candidate sites, one per wire segment, with output-propagated generators.
 
-    Sweeps the wire boundaries backward, maintaining the Clifford implemented by the
-    instruction suffix; stabilizer row ``q`` of its tableau is the forward propagation
-    ``S Z_q S^dag``. A wire segment is a maximal run of boundaries on one qubit with no gate
-    on that qubit in between: all its boundaries carry the same propagated generator with no
-    rotation between them, so its earliest boundary represents it exhaustively. Segments past
-    a qubit's terminal measurement are never emitted; with ``entangling_only``, only wires
-    directly following a multi-qubit gate are emitted (the reference's site restriction).
+    Sweeps the wire boundaries backward, maintaining the suffix Clifford ``S``; stabilizer
+    row ``q`` of its tableau is the forward propagation ``S Z_q S^dag``. All boundaries of a
+    wire segment (a maximal gate-free run on one qubit) share one generator with no rotation
+    between them, so its earliest boundary represents it exhaustively. Segments past a
+    terminal measurement are skipped; ``entangling_only`` keeps only wires directly
+    following a multi-qubit gate.
 
     Returns:
-        ``(positions, qubits, gens, full_clifford)``, time-sorted: per candidate the
-        insertion position (a ``T`` there precedes ``circuit.data[position]``), its qubit,
-        and (as a ``PauliList``) its generator propagated to the circuit output; plus the
-        Clifford of the entire circuit.
+        Time-sorted ``(positions, qubits, gens, full_clifford)``: a ``T`` at candidate ``i``
+        precedes ``circuit.data[positions[i]]`` on ``qubits[i]`` and has generator
+        ``gens[i]`` at the circuit output; ``full_clifford`` is the whole circuit's Clifford.
 
     Raises:
         ValueError: on a non-Clifford instruction or a non-terminal measurement.

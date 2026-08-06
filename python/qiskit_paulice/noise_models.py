@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import TypeGuard
 
 import numpy as np
 from qiskit.providers import BackendV2
@@ -73,7 +74,10 @@ class NoiseModel:
     """Probability of bit-flip during measurement."""
 
     idling_noise: float | None = None
-    """Qubit decay rate during idle time. Total error probability is given as ``1 - exp(-t / idling_noise)``."""
+    """Qubit decay rate during idle time. Total error probability is given as ``1 - exp(-t / idling_noise)``.
+
+    Not currently supported: both :func:`~qiskit_paulice.checks.add_pauli_checks` and
+    :meth:`~qiskit_paulice.CheckedCircuit.estimate_fault_rates` raise if this is set."""
 
     @classmethod
     def from_backend(
@@ -290,3 +294,66 @@ class NoiseModel:
             readout_prob = sum(x_probs) / len(x_probs) if x_probs else None
 
         return cls(gate_noise=gate_noise_dict, readout_noise=readout_prob, idling_noise=None)
+
+
+def _is_uniform_gate_noise(noise: GateNoise | None) -> TypeGuard[float]:
+    return isinstance(noise, float)
+
+
+def _is_layered_gate_noise(noise: GateNoise | None) -> TypeGuard[dict]:
+    if not isinstance(noise, dict) or not noise:
+        return False
+    first_key = next(iter(noise.keys()))
+    return isinstance(first_key, tuple) and len(first_key) > 0 and isinstance(first_key[0], tuple)
+
+
+def _is_gate_wise_noise(noise: GateNoise | None) -> TypeGuard[dict]:
+    if not isinstance(noise, dict) or not noise:
+        return False
+    first_key = next(iter(noise.keys()))
+    return isinstance(first_key, tuple) and len(first_key) == 2 and isinstance(first_key[0], int)
+
+
+def _convert_layered_noise(noise: LayeredGateNoise):
+    new_noise = {}
+    for layer in noise:
+        # The Rust layering pass always uses canonical ``(min, max)`` edge tuples internally,
+        # so non-canonical user layer keys (e.g. ``((1, 0),)``) would otherwise silently
+        # fail to match. Canonicalize each edge and re-sort the layer's edges here.
+        canonical_layer = tuple(sorted((min(e), max(e)) for e in layer))
+        # A layer's edges fire simultaneously, so they must be pairwise disjoint (a
+        # matching); overlapping edges (including duplicates like ``((a, b), (b, a))``)
+        # cannot be layered and would panic the Rust layering pass.
+        qubits = [q for edge in canonical_layer for q in edge]
+        if len(set(qubits)) != len(qubits):
+            raise ValueError(
+                f"Layer {layer!r} is not a matching: its edges must be pairwise disjoint."
+            )
+        converted_noise = []
+        for p, r in noise[layer]:
+            p_str = p.to_label() if isinstance(p, Pauli) else p
+            # User-facing strings follow Qiskit convention (rightmost char = qubit 0);
+            # the Rust consumer indexes left-to-right (leftmost char = qubit 0).
+            converted_noise.append((p_str[::-1], r))
+        new_noise[canonical_layer] = converted_noise
+    return new_noise
+
+
+def _convert_gate_wise_noise(noise: GateWiseNoise):
+    pauli_map = {"I": 0, "X": 1, "Y": 2, "Z": 3}
+    new_noise = {}
+    for edge in noise:
+        converted_noise = []
+        for p_str, r in noise[edge]:
+            if not isinstance(p_str, str) or len(p_str) != 2:
+                raise ValueError(
+                    "Each gate-wise generator must be a 2-character Pauli string paired "
+                    "left-to-right with the edge tuple (e.g. 'XZ' on edge (a, b) = X on a, "
+                    "Z on b)."
+                )
+            # ``p_str[0]`` on edge[0], ``p_str[1]`` on edge[1] — same convention as
+            # PauliLindbladMap's sparse ``(pauli_str, indices)`` form.
+            p_tuple = (pauli_map[p_str[0]], pauli_map[p_str[1]])
+            converted_noise.append((p_tuple, r))
+        new_noise[edge] = converted_noise
+    return new_noise

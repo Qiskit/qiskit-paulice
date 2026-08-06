@@ -25,4 +25,6 @@ features:
     Sec. S2 -- subtracting it from the measured fidelity of the undoped checked circuit
     lower bounds the fidelity of the ``T``-doped circuit), the post-selected logical error
     rate, and per-check syndrome trigger rates for validating a noise model against
-    measured syndrome data. All rates carry standard errors.
+    measured syndrome data. All rates carry standard errors. Fault generators are resolved
+    by the same Rust noise models the check picker uses, covering uniform, gate-wise, and
+    layered gate noise, with readout errors handled classically.
