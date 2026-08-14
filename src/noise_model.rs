@@ -153,6 +153,11 @@ fn _infer_gatewise_fallback(gate_models: &GateDescription) -> Vec<((u8, u8), f64
             all_pairs.insert(*pair);
         }
     }
+    // Sort the pair set before iterating: the fallback list's order feeds the
+    // generator list order, which the (deterministic, sequential) gamma rate
+    // sum depends on — HashSet order would reintroduce per-process jitter.
+    let mut all_pairs: Vec<(u8, u8)> = all_pairs.into_iter().collect();
+    all_pairs.sort_unstable();
     let mut fallback = Vec::new();
     for pair in all_pairs.iter() {
         let mut rates: Vec<f64> = gate_models
@@ -211,8 +216,13 @@ impl NoiseModelLike for LayeredNoiseModel {
             effective_layer_models.insert(key, inferred);
         }
 
-        let layer_types = effective_layer_models
-            .keys()
+        // Sort the layer keys before building `layer_types`: HashMap key order
+        // varies per process, and `layer_types` order determines layer indices
+        // (hence layer routing and generator order downstream).
+        let mut sorted_keys: Vec<_> = effective_layer_models.keys().cloned().collect();
+        sorted_keys.sort();
+        let layer_types = sorted_keys
+            .iter()
             .map(|d| HashSet::from_iter(d.iter().cloned()))
             .collect::<Vec<_>>();
         let layers = get_layered_circuit(circuit.clone(), &layer_types);
@@ -348,6 +358,10 @@ fn _infer_layered_generators(
             all_pairs.insert(*p);
         }
     }
+    // Sorted for the same reason as `_infer_gatewise_fallback`: generator
+    // order must be process-stable.
+    let mut all_pairs: Vec<(u8, u8)> = all_pairs.into_iter().collect();
+    all_pairs.sort_unstable();
     let mut result = Vec::new();
     for pair in all_pairs.iter() {
         let mut rates: Vec<f64> = source

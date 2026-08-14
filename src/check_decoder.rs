@@ -108,19 +108,23 @@ impl CheckDecoder {
         let middle_wire = &self.wires[middle_idx];
         let other_wire = &self.wires[self.wires.len() - 1];
 
+        let t = std::time::Instant::now();
         let actual_paulis: Vec<_> = self
             .all_paulis
             .iter()
             .filter(|(w, _)| w != middle_wire && w != other_wire)
             .cloned()
             .collect();
+        // Same rows in the same order as filtering by `actual_paulis.contains`
+        // (all_paulis entries are unique), without the quadratic membership scan.
         let restricted_b_matrix: Vec<_> = self
             .b_matrix
             .iter()
             .zip(self.all_paulis.iter())
-            .filter(|(_, a)| actual_paulis.contains(a))
+            .filter(|(_, (w, _))| w != middle_wire && w != other_wire)
             .map(|(vec, _)| vec.clone())
             .collect();
+        crate::bench_timing::record("find_checks/restrict", t);
 
         let mut checks = Vec::new();
         for paulis in (1..=3).cartesian_product(1..=3) {
@@ -142,8 +146,10 @@ impl CheckDecoder {
                     .position(|(w, p)| *other_wire == *w && paulis.1 == *p)
                     .unwrap()],
             );
+            let t = std::time::Instant::now();
             let solution =
                 information_set_decoding(&restricted_b_matrix, &target_vector, 1, true, rng);
+            crate::bench_timing::record("find_checks/isd", t);
             if let Some(solution) = solution {
                 let mut solution = _recombine_solution(&solution, &actual_paulis);
                 solution.update(middle_wire.clone(), paulis.0);

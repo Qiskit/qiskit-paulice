@@ -10,6 +10,7 @@
 // copyright notice, and modified files need to carry a notice indicating
 // that they have been altered from the originals.
 
+use super::cumulant_table::CumulantTable;
 use super::noise_model::{NoiseGenerator, NoiseModelLike, UNoiseModel};
 use super::pauli::Pauli;
 use super::pauli_propagator::{Direction, PauliPropagator};
@@ -30,6 +31,9 @@ fn proba_from_rate(rate: f64) -> f64 {
     1. - (1. + (-2. * rate).exp()) / 2.
 }
 
+/// Legacy per-row representation of `CumulantTable::syndrome`'s single-row
+/// question: does any wire of `error` anticommute with the row. Kept for the
+/// `get_uncovered_paulis` path and as the reference in equivalence tests.
 fn is_covered_single_cumulant(cumulant: &SparsePauli, error: &SparsePauli) -> bool {
     for (w, p) in error.paulis.iter() {
         if *cumulant.paulis.get(w).unwrap_or(p) != *p {
@@ -39,14 +43,16 @@ fn is_covered_single_cumulant(cumulant: &SparsePauli, error: &SparsePauli) -> bo
     false
 }
 
-fn get_syndrome(cumulants: &[SparsePauli], error: &SparsePauli) -> Vec<bool> {
+/// Legacy twin of `CumulantTable::syndrome` (reference implementation).
+pub fn get_syndrome_legacy(cumulants: &[SparsePauli], error: &SparsePauli) -> Vec<bool> {
     cumulants
         .iter()
         .map(|c| is_covered_single_cumulant(c, error))
         .collect()
 }
 
-fn is_covered(cumulants: &[SparsePauli], error: &SparsePauli) -> bool {
+/// Legacy twin of `CumulantTable::covered_parity_any` (reference implementation).
+pub fn is_covered_legacy(cumulants: &[SparsePauli], error: &SparsePauli) -> bool {
     for cumulant in cumulants.iter() {
         if error
             .paulis
@@ -71,8 +77,8 @@ pub fn is_covered_single(cumulants: &[SparsePauli], pauli: u8, wire: &Wire) -> b
 pub struct Coverage<'a> {
     circuit: &'a CliffordCircuit,
     noise_models: &'a Vec<UNoiseModel>,
-    logical_cumulants: Vec<SparsePauli>,
-    post_selected_cumulants: Vec<SparsePauli>,
+    logical_cumulants: CumulantTable,
+    post_selected_cumulants: CumulantTable,
 }
 
 impl<'a> Coverage<'a> {
@@ -80,8 +86,8 @@ impl<'a> Coverage<'a> {
         Self {
             circuit,
             noise_models,
-            logical_cumulants: Vec::new(),
-            post_selected_cumulants: Vec::new(),
+            logical_cumulants: CumulantTable::default(),
+            post_selected_cumulants: CumulantTable::default(),
         }
     }
 
@@ -111,16 +117,20 @@ impl<'a> Coverage<'a> {
                 pauli
             })
             .collect();
-        self.post_selected_cumulants
-            .extend(propagator.get_cumulants_from_paulis(&as_paulis, Direction::Backward, true));
+        self.post_selected_cumulants.extend(
+            propagator.get_cumulant_table_from_paulis(&as_paulis, Direction::Backward, true),
+        );
     }
     /// Computes & stores the cumulants of a collection of logical operators
     /// Those can either be initial stabilizers (that will be forward-propagated)
     /// or measured qubits (we will backpropagate Z operators for each of them)
     pub fn set_logical_cumulants(&mut self, stabilizers: &[Pauli], measured_qubits: &[usize]) {
         let propagator = PauliPropagator::new(self.circuit);
-        self.logical_cumulants
-            .extend(propagator.get_cumulants_from_paulis(stabilizers, Direction::Forward, true));
+        self.logical_cumulants.extend(propagator.get_cumulant_table_from_paulis(
+            stabilizers,
+            Direction::Forward,
+            true,
+        ));
         let as_paulis: Vec<_> = measured_qubits
             .iter()
             .map(|q| {
@@ -129,14 +139,17 @@ impl<'a> Coverage<'a> {
                 pauli
             })
             .collect();
-        self.logical_cumulants
-            .extend(propagator.get_cumulants_from_paulis(&as_paulis, Direction::Backward, true));
+        self.logical_cumulants.extend(propagator.get_cumulant_table_from_paulis(
+            &as_paulis,
+            Direction::Backward,
+            true,
+        ));
     }
     pub fn balanced_gamma_apx(&self) -> f64 {
         let error_generators = self.get_generator_errors();
         let mut gammas: HashMap<Vec<bool>, Vec<f64>> = HashMap::new();
         for (generator, rate) in error_generators.iter() {
-            let syndrome = get_syndrome(&self.post_selected_cumulants, generator);
+            let syndrome = self.post_selected_cumulants.syndrome(generator);
             gammas.entry(syndrome).or_default().push(*rate);
         }
         let nclasses = gammas.len() as f64;
@@ -185,7 +198,7 @@ impl<'a> Coverage<'a> {
                 for index in bin {
                     error.mult_inplace(&error_generators[*index].0);
                 }
-                let syndrome = get_syndrome(&measured_cumulants, &error);
+                let syndrome = measured_cumulants.syndrome(&error);
                 *gammas_threads[rayon::current_thread_index().unwrap_or_default()]
                     .lock()
                     .unwrap()
@@ -208,28 +221,41 @@ impl<'a> Coverage<'a> {
     }
 
     pub fn gamma_apx(&self) -> f64 {
+        let t = std::time::Instant::now();
         let error_generators = self.get_generator_errors();
+        crate::bench_timing::record("metric/generators", t);
 
-        let accs: Vec<_> = (0..rayon::current_num_threads())
-            .map(|_| Mutex::new(0.))
+        let t = std::time::Instant::now();
+        // Coverage flags are computed in parallel but collected in generator
+        // order (indexed collect preserves order), and the rates are then
+        // summed sequentially in that order. This keeps the result independent
+        // of thread count and scheduling — the legacy per-thread accumulators
+        // summed in a scheduling-dependent order, which made gamma jitter by
+        // ulps across runs and could flip ties in check selection.
+        let uncovered: Vec<bool> = error_generators
+            .par_iter()
+            .map(|(generator, _)| {
+                !self.post_selected_cumulants.covered_parity_any(generator)
+                    && self.logical_cumulants.covered_parity_any(generator)
+            })
             .collect();
-        error_generators.par_iter().for_each(|(generator, rate)| {
-            if is_covered(&self.post_selected_cumulants, generator) {
-                return;
+        let mut acc = 0.;
+        for ((_, rate), flag) in error_generators.iter().zip(uncovered.iter()) {
+            if *flag {
+                acc += rate;
             }
-            if !is_covered(&self.logical_cumulants, generator) {
-                return;
-            }
-            *accs[rayon::current_thread_index().unwrap_or_default()]
-                .lock()
-                .unwrap() += rate;
-        });
-        (2. * accs.into_iter().map(|m| *m.lock().unwrap()).sum::<f64>()).exp()
+        }
+        let out = (2. * acc).exp();
+        crate::bench_timing::record("metric/score_generators", t);
+        out
     }
 
     pub fn approximate_psr_ler(&self, nshots: usize) -> (f64, f64) {
+        let t = std::time::Instant::now();
         let error_generators = self.get_generator_errors();
+        crate::bench_timing::record("ler/generators", t);
 
+        let t = std::time::Instant::now();
         let reverse_bins: Vec<_> = (0..nshots).map(|_| Mutex::new(Vec::new())).collect();
         error_generators
             .clone()
@@ -248,6 +274,8 @@ impl<'a> Coverage<'a> {
                     reverse_bins[elem].lock().unwrap().push(index);
                 }
             });
+        crate::bench_timing::record("ler/sample", t);
+        let t = std::time::Instant::now();
         let reverse_bins_buckets: Vec<Mutex<Vec<Vec<usize>>>> = (0..rayon::current_num_threads())
             .map(|_| Mutex::new(Vec::new()))
             .collect();
@@ -259,6 +287,7 @@ impl<'a> Coverage<'a> {
                     .push(b.lock().unwrap().clone());
             }
         });
+        crate::bench_timing::record("ler/redistribute", t);
         let accepted_errors: Vec<_> = (0..rayon::current_num_threads())
             .map(|_| Mutex::new(0))
             .collect();
@@ -269,6 +298,7 @@ impl<'a> Coverage<'a> {
         let cumulants = self.logical_cumulants.clone();
         let measured_cumulants = self.post_selected_cumulants.clone();
 
+        let t = std::time::Instant::now();
         let relevant_indices_len = reverse_bins_buckets
             .iter()
             .map(|b| b.lock().unwrap().len())
@@ -284,11 +314,11 @@ impl<'a> Coverage<'a> {
                 if error.paulis.is_empty() {
                     continue;
                 }
-                if is_covered(&measured_cumulants, &error) {
+                if measured_cumulants.covered_parity_any(&error) {
                     continue;
                 }
                 loc_a_e += 1;
-                if !is_covered(&cumulants, &error) {
+                if !cumulants.covered_parity_any(&error) {
                     continue;
                 }
                 loc_a_l_e += 1;
@@ -300,6 +330,7 @@ impl<'a> Coverage<'a> {
                 .lock()
                 .unwrap() += loc_a_l_e;
         });
+        crate::bench_timing::record("ler/score", t);
         let accepted_errors: i32 = accepted_errors
             .into_iter()
             .map(|m| *m.lock().unwrap())

@@ -15,10 +15,18 @@ use super::metric::PyMetric as Metric;
 use super::noise_model::NoiseModel;
 use pyo3::prelude::*;
 
+/// Drain the process-global stage timers accumulated since the last call.
+/// Returns (stage_name, total_seconds, call_count) rows, largest first.
+#[pyfunction]
+fn bench_timings_take() -> Vec<(String, f64, u64)> {
+    crate::bench_timing::take()
+}
+
 #[pymodule]
 fn _internal_r(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<CheckPicker>()?;
     m.add_class::<Metric>()?;
     m.add_class::<NoiseModel>()?;
+    m.add_function(wrap_pyfunction!(bench_timings_take, m)?)?;
     Ok(())
 }

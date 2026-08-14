@@ -28,10 +28,32 @@ use rustiq_core::structures::CliffordCircuit;
 
 use pyo3::prelude::*;
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
 type LogicalData = (Vec<usize>, StabilizerGroup);
 type CheckData = (Vec<usize>, Vec<Vec<usize>>);
 
 type PyWire = (i32, usize);
+
+/// Memoized candidate evaluations, keyed by the canonical (sorted) form of the
+/// candidate check. Valid exactly as long as the evaluator state is unchanged:
+/// the map is replaced with a fresh one in `set_evaluation_data` and
+/// `commit_check`, and shared (via `Arc`) by `copy`/`clone` — so the window
+/// copies made from one committed picker all reuse each other's evaluations.
+/// Evaluation is a pure function of (evaluator state, check), so a hit returns
+/// exactly what recomputation would.
+type EvalMemo = Arc<Mutex<HashMap<Vec<(PyWire, u8)>, (f64, Vec<usize>)>>>;
+
+fn _memo_key(check: &SparsePauli) -> Vec<(PyWire, u8)> {
+    let mut key: Vec<_> = check
+        .paulis
+        .iter()
+        .map(|(w, p)| (_to_py_wire(w.clone()), *p))
+        .collect();
+    key.sort_unstable();
+    key
+}
 
 fn _to_rust_wire(py_wire: PyWire) -> Wire {
     if py_wire.0 == -1 {
@@ -64,6 +86,8 @@ pub struct CheckPicker {
     check_group: Option<CheckGroup>,
     /// Possible CheckDecoder data structure
     check_decoder: Option<CheckDecoder>,
+    /// Shared memo of candidate evaluations for the current evaluator state
+    eval_memo: EvalMemo,
 }
 
 #[pymethods]
@@ -103,6 +127,7 @@ impl CheckPicker {
             check_evaluator: None,
             check_group: None,
             check_decoder: None,
+            eval_memo: EvalMemo::default(),
         }
     }
 
@@ -124,6 +149,7 @@ impl CheckPicker {
         metric: Metric,
         ancilla: usize,
     ) {
+        let t = std::time::Instant::now();
         self.check_evaluator = Some(CheckEvaluator::new(
             self.circuit.clone(),
             metric._data.clone(),
@@ -134,6 +160,9 @@ impl CheckPicker {
             self.check_data.1.clone(),
             ancilla,
         ));
+        // New evaluator state -> previously memoized evaluations no longer apply.
+        self.eval_memo = EvalMemo::default();
+        crate::bench_timing::record("setup/evaluator_new", t);
     }
 
     /// Sets the target set of wires to use as support for the check.
@@ -144,6 +173,7 @@ impl CheckPicker {
     #[pyo3(signature = (wires, paulis, seed=None))]
     pub fn set_support(&mut self, wires: Vec<PyWire>, paulis: Vec<u8>, seed: Option<u64>) {
         let wires: Vec<_> = wires.into_iter().map(_to_rust_wire).collect();
+        let t = std::time::Instant::now();
         self.check_group = Some(CheckGroup::new(
             &self.circuit,
             &wires,
@@ -151,6 +181,8 @@ impl CheckPicker {
             &self.logical_data.0,
             &self.logical_data.1,
         ));
+        crate::bench_timing::record("setup/check_group_new", t);
+        let t = std::time::Instant::now();
         self.check_decoder = Some(CheckDecoder::new(
             &self.circuit,
             &wires,
@@ -159,6 +191,7 @@ impl CheckPicker {
             &self.logical_data.1,
             seed,
         ));
+        crate::bench_timing::record("setup/check_decoder_new", t);
     }
     /// Computes the dimension of the underlying check group
     pub fn get_dimension(&self) -> usize {
@@ -194,20 +227,39 @@ impl CheckPicker {
             self.check_decoder.is_some(),
             "Please first set the check's support"
         );
+        let t = std::time::Instant::now();
         let checks = self.check_decoder.as_ref().unwrap().find_checks();
+        crate::bench_timing::record("search/find_checks", t);
         let mut best_check = None;
         let mut best_cost = f64::MAX;
         for check in checks {
+            let key = _memo_key(&check);
+            if let Some((cost, vzs)) = self.eval_memo.lock().unwrap().get(&key).cloned() {
+                crate::bench_timing::record("search/memo_hit", std::time::Instant::now());
+                if cost < best_cost {
+                    best_cost = cost;
+                    best_check = Some((check, vzs));
+                }
+                continue;
+            }
+            let t = std::time::Instant::now();
             let vzs = if self.logical_data.0.is_empty() {
                 Vec::new()
             } else {
                 self.check_evaluator.as_ref().unwrap().compute_vzs(&check)
             };
+            crate::bench_timing::record("search/compute_vzs", t);
+            let t = std::time::Instant::now();
             let cost = self
                 .check_evaluator
                 .as_ref()
                 .unwrap()
                 .evaluate(&check, &vzs);
+            crate::bench_timing::record("search/evaluate", t);
+            self.eval_memo
+                .lock()
+                .unwrap()
+                .insert(key, (cost, vzs.clone()));
             if cost < best_cost {
                 best_cost = cost;
                 best_check = Some((check, vzs));
@@ -241,7 +293,10 @@ impl CheckPicker {
 
     /// Makes a copy of the CheckPicker
     pub fn copy(&self) -> Self {
-        self.clone()
+        let t = std::time::Instant::now();
+        let out = self.clone();
+        crate::bench_timing::record("setup/copy_picker", t);
+        out
     }
 
     /// Returns all the uncovered single qubit Paulis in the circuit.
@@ -288,6 +343,8 @@ impl CheckPicker {
             check_evaluator: None,
             check_group: None,
             check_decoder: None,
+            // Committing changes the circuit and check data; start a fresh memo.
+            eval_memo: EvalMemo::default(),
         }
     }
 }

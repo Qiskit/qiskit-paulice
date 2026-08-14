@@ -60,19 +60,28 @@ impl CheckEvaluator {
     }
     /// Evaluates some check (described by a SparsePauli object and a collection of virtual Zs at the end of the circuit)
     pub fn evaluate(&self, check: &SparsePauli, virtual_zs: &[usize]) -> f64 {
+        let t = std::time::Instant::now();
         let checked_circuit = add_check_no_allocate(self.base_circuit.clone(), check, self.ancilla);
+        crate::bench_timing::record("evaluate/clone_add_check", t);
         let mut all_check_qubits = self.current_checks.clone();
         all_check_qubits.push(self.ancilla);
         let mut all_virtual_zs = self.current_virtual_zs.clone();
         all_virtual_zs.push(virtual_zs.to_vec());
         let mut coverage = Coverage::new(&checked_circuit, &self.noise_models);
+        let t = std::time::Instant::now();
         coverage.set_check_cumulants(&all_check_qubits, &all_virtual_zs);
+        crate::bench_timing::record("evaluate/check_cumulants", t);
+        let t = std::time::Instant::now();
         coverage.set_logical_cumulants(&self.stabilizers, &self.measured_qubits);
-        match self.metric {
+        crate::bench_timing::record("evaluate/logical_cumulants", t);
+        let t = std::time::Instant::now();
+        let out = match self.metric {
             Metric::LogicalErrorRate(nshots) => coverage.approximate_psr_ler(nshots).1,
             Metric::Gamma => coverage.gamma_apx(),
             Metric::BalancedGamma => coverage.balanced_gamma_apx(),
-        }
+        };
+        crate::bench_timing::record("evaluate/metric", t);
+        out
     }
     /// Utility method to infer the virtual Zs for a given check.
     /// Also checks that the check ends up diagonal when pulled to the end.

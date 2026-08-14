@@ -10,11 +10,63 @@
 // copyright notice, and modified files need to carry a notice indicating
 // that they have been altered from the originals.
 
+use super::cumulant_table::CumulantTable;
 use super::pauli::Pauli;
 use super::sparse_pauli::SparsePauli;
 use super::utils::{get_qbits, get_wires};
 use super::wire::Wire;
 use rustiq_core::structures::{CliffordCircuit, PauliLike, PauliSet};
+
+/// Bit-packed twin of `get_pauli_set_cumulants_forward`: identical walk and
+/// snapshot points, recording whole columns instead of per-row map entries.
+fn get_pauli_set_cumulant_table_forward(
+    circuit: &CliffordCircuit,
+    pset: &mut PauliSet,
+    restrict_to_2q_gates: bool,
+) -> CumulantTable {
+    let mut table = CumulantTable::new(pset.len());
+    for (gate_index, gate) in circuit.gates.iter().enumerate() {
+        pset.conjugate_with_gate(gate);
+        if gate.arity() < 2 && restrict_to_2q_gates {
+            continue;
+        }
+        for (qbit, wire) in get_qbits(&circuit.gates[gate_index])
+            .into_iter()
+            .zip(get_wires(&circuit.gates[gate_index], gate_index).into_iter())
+        {
+            table.record(wire, pset, qbit, circuit.nqbits);
+        }
+    }
+    table
+}
+
+/// Bit-packed twin of `get_pauli_set_cumulants_backward`: identical walk and
+/// snapshot points (record before undoing each gate; inputs recorded last).
+fn get_pauli_set_cumulant_table_backward(
+    circuit: &CliffordCircuit,
+    pset: &mut PauliSet,
+    restrict_to_2q_gates: bool,
+) -> CumulantTable {
+    let mut table = CumulantTable::new(pset.len());
+    let mut gate_index = circuit.gates.len() as i32 - 1;
+    while gate_index >= 0 {
+        let gate = &circuit.gates[gate_index as usize];
+        if !(gate.arity() < 2 && restrict_to_2q_gates) {
+            for (qbit, wire) in get_qbits(gate)
+                .into_iter()
+                .zip(get_wires(gate, gate_index as usize).into_iter())
+            {
+                table.record(wire, pset, qbit, circuit.nqbits);
+            }
+        }
+        pset.conjugate_with_gate(&gate.dagger());
+        gate_index -= 1;
+    }
+    for qbit in 0..circuit.nqbits {
+        table.record(Wire::Input(qbit), pset, qbit, circuit.nqbits);
+    }
+    table
+}
 fn get_pauli_set_cumulants_forward(
     circuit: &CliffordCircuit,
     pset: &mut PauliSet,
@@ -242,6 +294,30 @@ impl<'a> PauliPropagator<'a> {
         }
     }
 
+    /// Bit-packed twin of `get_cumulants_from_paulis` (identical pset setup
+    /// and walk; only the storage format differs).
+    pub fn get_cumulant_table_from_paulis(
+        &self,
+        paulis: &[Pauli],
+        direction: Direction,
+        restrict_to_2q_gates: bool,
+    ) -> CumulantTable {
+        let mut pset = PauliSet::new_empty(self.circuit.nqbits, paulis.len());
+        for (i, pauli) in paulis.iter().enumerate() {
+            for qbit in 0..pauli.len() / 2 {
+                pset.set_entry(i, qbit, pauli[qbit], pauli[qbit + self.circuit.nqbits]);
+            }
+        }
+        match direction {
+            Direction::Backward => {
+                get_pauli_set_cumulant_table_backward(self.circuit, &mut pset, restrict_to_2q_gates)
+            }
+            Direction::Forward => {
+                get_pauli_set_cumulant_table_forward(self.circuit, &mut pset, restrict_to_2q_gates)
+            }
+        }
+    }
+
     pub fn get_check_cumulants(
         &self,
         check_qubits: &[usize],
@@ -268,5 +344,123 @@ impl<'a> PauliPropagator<'a> {
         }
 
         self.get_cumulants_from_paulis(&paulis, Direction::Backward, true)
+    }
+}
+
+#[cfg(test)]
+mod cumulant_walk_tests {
+    use super::*;
+    use crate::coverage::{get_syndrome_legacy, is_covered_legacy};
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+    use rustiq_core::structures::CliffordGate;
+
+    fn random_circuit(rng: &mut StdRng, nqbits: usize, ngates: usize) -> CliffordCircuit {
+        let mut circuit = CliffordCircuit::new(nqbits);
+        for _ in 0..ngates {
+            let q = rng.random_range(0..nqbits);
+            let gate = match rng.random_range(0..7) {
+                0 => CliffordGate::H(q),
+                1 => CliffordGate::S(q),
+                2 => CliffordGate::Sd(q),
+                3 => CliffordGate::SqrtX(q),
+                4 => CliffordGate::SqrtXd(q),
+                _ => {
+                    let mut q2 = rng.random_range(0..nqbits);
+                    while q2 == q {
+                        q2 = rng.random_range(0..nqbits);
+                    }
+                    if rng.random_bool(0.5) {
+                        CliffordGate::CZ(q, q2)
+                    } else {
+                        CliffordGate::CNOT(q, q2)
+                    }
+                }
+            };
+            circuit.gates.push(gate);
+        }
+        circuit
+    }
+
+    /// The bit-packed table built by the mirrored walk must answer every
+    /// coverage/syndrome query exactly like the legacy `Vec<SparsePauli>`
+    /// cumulants, on random circuits, rows, directions, and restrict flags.
+    #[test]
+    fn table_walk_matches_legacy_walk() {
+        let mut rng = StdRng::seed_from_u64(2026);
+        for trial in 0..60 {
+            let nqbits = 2 + trial % 6;
+            let circuit = random_circuit(&mut rng, nqbits, 8 + 4 * (trial % 10));
+            let nrows = 1 + trial % 5;
+            let paulis: Vec<Pauli> = (0..nrows)
+                .map(|_| (0..2 * nqbits).map(|_| rng.random_bool(0.4)).collect())
+                .collect();
+            let propagator = PauliPropagator::new(&circuit);
+            for (direction, restrict) in [
+                (Direction::Backward, true),
+                (Direction::Backward, false),
+                (Direction::Forward, true),
+                (Direction::Forward, false),
+            ] {
+                let legacy = propagator.get_cumulants_from_paulis(
+                    &paulis,
+                    match direction {
+                        Direction::Backward => Direction::Backward,
+                        Direction::Forward => Direction::Forward,
+                    },
+                    restrict,
+                );
+                let table = propagator.get_cumulant_table_from_paulis(
+                    &paulis,
+                    match direction {
+                        Direction::Backward => Direction::Backward,
+                        Direction::Forward => Direction::Forward,
+                    },
+                    restrict,
+                );
+                // Probe every wire of the circuit (plus inputs) with every
+                // single-qubit error, and some random multi-wire errors.
+                let mut all_wires: Vec<Wire> = (0..nqbits).map(Wire::Input).collect();
+                for (gi, gate) in circuit.gates.iter().enumerate() {
+                    for qi in 0..get_qbits(gate).len() {
+                        all_wires.push(Wire::GateWire(gi, qi));
+                    }
+                }
+                for wire in all_wires.iter() {
+                    for p in 1..=3u8 {
+                        let mut error = SparsePauli::new();
+                        error.update(wire.clone(), p);
+                        assert_eq!(
+                            is_covered_legacy(&legacy, &error),
+                            table.covered_parity_any(&error),
+                            "single-wire is_covered mismatch (trial {trial})"
+                        );
+                        assert_eq!(
+                            get_syndrome_legacy(&legacy, &error),
+                            table.syndrome(&error),
+                            "single-wire syndrome mismatch (trial {trial})"
+                        );
+                    }
+                }
+                for _ in 0..50 {
+                    let mut error = SparsePauli::new();
+                    for wire in all_wires.iter() {
+                        if rng.random_bool(0.2) {
+                            error.update(wire.clone(), rng.random_range(1..4) as u8);
+                        }
+                    }
+                    assert_eq!(
+                        is_covered_legacy(&legacy, &error),
+                        table.covered_parity_any(&error),
+                        "multi-wire is_covered mismatch (trial {trial})"
+                    );
+                    assert_eq!(
+                        get_syndrome_legacy(&legacy, &error),
+                        table.syndrome(&error),
+                        "multi-wire syndrome mismatch (trial {trial})"
+                    );
+                }
+            }
+        }
     }
 }
