@@ -55,12 +55,12 @@ nbtest = [
     "nbmake>=1.5.0",
 ]
 style = [
-    "ruff==0.15.4",
+    "ruff==0.16.7",
     "nbqa>=1.8.5",
 ]
 lint = [
     "qiskit-paulice[style]",
-    "mypy==2.1.0",
+    "mypy==2.3.1",
     "pylint==4.0.5",
     "reno>=4.1",
     "toml>=0.9.6",
@@ -75,7 +75,7 @@ notebook-dependencies = [
 ]
 docs = [
     "qiskit-paulice[test,notebook-dependencies]",
-    "qiskit-sphinx-theme~=2.0.0",
+    "qiskit-sphinx-theme~=2.1.0",
     "matplotlib",
     "jupyter-sphinx",
     "sphinx-design",
