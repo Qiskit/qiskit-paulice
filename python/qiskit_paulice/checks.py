@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Sequence
-from typing import Literal
+from typing import Literal, TypeGuard
 
 import numpy as np
 from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister
 from qiskit.circuit.equivalence_library import SessionEquivalenceLibrary as _SEL
+from qiskit.quantum_info import Pauli
 from qiskit.transpiler import PassManager
 from qiskit.transpiler.exceptions import TranspilerError
 from qiskit.transpiler.passes import BasisTranslator, UnrollCustomDefinitions
@@ -29,14 +30,7 @@ from ._internal import Metric as _Metric
 from ._internal import NoiseModel as _NoiseModel
 from ._internal import pick_checks as _pick_checks
 from .checked_circuit import CheckedCircuit
-from .noise_models import (
-    NoiseModel,
-    _convert_gate_wise_noise,
-    _convert_layered_noise,
-    _is_gate_wise_noise,
-    _is_layered_gate_noise,
-    _is_uniform_gate_noise,
-)
+from .noise_models import GateNoise, GateWiseNoise, LayeredGateNoise, NoiseModel
 
 
 def add_pauli_checks(
@@ -81,8 +75,7 @@ def add_pauli_checks(
             approximation of the noise generated from backend benchmark data is often sufficient.
             Ancilla/target edges introduced by check insertion that aren't in the supplied
             ``GateWiseNoise`` or ``LayeredNoise`` are auto-inferred (median rate per Pauli pair
-            across the supplied data); supply them explicitly to override. Idling noise is not
-            supported and raises a ``ValueError``.
+            across the supplied data); supply them explicitly to override.
         cost: Metric to optimize. Can be ``"gamma"`` or ``"LER"`` (logical error rate).
 
             - ``"gamma"``: The gamma value associated with the inverse logical noise channel
@@ -126,13 +119,6 @@ def add_pauli_checks(
         metric = _Metric.logical_error_rate(cost_nshots)
     else:
         raise ValueError(f"Invalid cost value: {cost}")
-
-    if noise_model.idling_noise is not None:
-        # The Rust idling model's ALAP-delay rates are not trusted. Reject rather than
-        # silently ignore (the historical behavior), so callers never believe check
-        # placement accounted for idling; estimate_fault_rates rejects it for the same
-        # reason.
-        raise ValueError("Idling noise is not supported by add_pauli_checks.")
 
     circuit = circuit.copy()
 
@@ -621,3 +607,65 @@ def _restore_measurements_and_cregs(
             for idx in range(num_active_checks):
                 qubit_idx = num_original_qubits + idx
                 circ.measure(qubit_idx, check_creg[idx])
+
+
+def _is_uniform_gate_noise(noise: GateNoise) -> TypeGuard[float]:
+    return isinstance(noise, float)
+
+
+def _is_layered_gate_noise(noise: GateNoise) -> TypeGuard[dict]:
+    if not isinstance(noise, dict) or not noise:
+        return False
+    first_key = next(iter(noise.keys()))
+    return isinstance(first_key, tuple) and len(first_key) > 0 and isinstance(first_key[0], tuple)
+
+
+def _is_gate_wise_noise(noise: GateNoise) -> TypeGuard[dict]:
+    if not isinstance(noise, dict) or not noise:
+        return False
+    first_key = next(iter(noise.keys()))
+    return isinstance(first_key, tuple) and len(first_key) == 2 and isinstance(first_key[0], int)
+
+
+def _convert_layered_noise(noise: LayeredGateNoise):
+    new_noise = {}
+    for layer in noise:
+        # The Rust layering pass always uses canonical ``(min, max)`` edge tuples internally,
+        # so non-canonical user layer keys (e.g. ``((1, 0),)``) would otherwise silently
+        # fail to match. Canonicalize each edge and re-sort the layer's edges here.
+        canonical_layer = tuple(sorted((min(e), max(e)) for e in layer))
+        # Reject duplicate edges within a layer key (e.g. ``((a, b), (b, a))`` collapsing
+        # to the same edge twice) — ambiguous and almost certainly a user mistake.
+        if len(set(canonical_layer)) != len(canonical_layer):
+            raise ValueError(
+                f"Layer {layer!r} contains the same edge twice after canonicalization to "
+                f"(min, max) form; each edge must appear at most once per layer."
+            )
+        converted_noise = []
+        for p, r in noise[layer]:
+            p_str = p.to_label() if isinstance(p, Pauli) else p
+            # User-facing strings follow Qiskit convention (rightmost char = qubit 0);
+            # the Rust consumer indexes left-to-right (leftmost char = qubit 0).
+            converted_noise.append((p_str[::-1], r))
+        new_noise[canonical_layer] = converted_noise
+    return new_noise
+
+
+def _convert_gate_wise_noise(noise: GateWiseNoise):
+    pauli_map = {"I": 0, "X": 1, "Y": 2, "Z": 3}
+    new_noise = {}
+    for edge in noise:
+        converted_noise = []
+        for p_str, r in noise[edge]:
+            if not isinstance(p_str, str) or len(p_str) != 2:
+                raise ValueError(
+                    "Each gate-wise generator must be a 2-character Pauli string paired "
+                    "left-to-right with the edge tuple (e.g. 'XZ' on edge (a, b) = X on a, "
+                    "Z on b)."
+                )
+            # ``p_str[0]`` on edge[0], ``p_str[1]`` on edge[1] — same convention as
+            # PauliLindbladMap's sparse ``(pauli_str, indices)`` form.
+            p_tuple = (pauli_map[p_str[0]], pauli_map[p_str[1]])
+            converted_noise.append((p_tuple, r))
+        new_noise[edge] = converted_noise
+    return new_noise

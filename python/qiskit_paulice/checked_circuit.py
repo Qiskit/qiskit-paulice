@@ -24,22 +24,11 @@ from typing import Any, Literal, NamedTuple
 import numpy as np
 from qiskit import QuantumCircuit
 from qiskit.circuit import Gate
-from qiskit.circuit.library import CXGate, CZGate, HGate, SdgGate, SGate, SXdgGate, SXGate
-from qiskit.quantum_info import Clifford, PauliList
 from samplomatic.transpiler import generate_boxing_pass_manager
 
 from ._internal import Metric as _Metric
-from ._internal import NoiseModel as _RustNoiseModel
 from ._internal.conversion import convert_to_rustiq_circuit as _convert_to_rustiq_circuit
 from ._internal.utils import build_check_picker as _build_check_picker
-from .noise_models import (
-    NoiseModel,
-    _convert_gate_wise_noise,
-    _convert_layered_noise,
-    _is_gate_wise_noise,
-    _is_layered_gate_noise,
-    _is_uniform_gate_noise,
-)
 
 # Non-unitary instructions :meth:`CheckedCircuit.box` accepts; all else is rejected.
 _NON_GATES = frozenset({"measure", "barrier"})
@@ -69,35 +58,6 @@ class UncoveredPauli(NamedTuple):
     qubit: int
     after_instruction: int | None
     pauli: Literal["X", "Y", "Z"]
-
-
-class FaultRates(NamedTuple):
-    r"""Monte Carlo fault-rate estimates for a checked circuit, from one common sample set.
-
-    Attributes:
-        harmless_rate: Probability that an accepted, nonidentity fault configuration
-            back-propagates to a diagonal Pauli on the circuit input (a global phase on
-            :math:`|0^n\rangle`).
-        harmless_stderr: Standard error of ``harmless_rate``.
-        logical_error_rate: Probability that an accepted fault configuration flips some
-            payload measurement outcome.
-        logical_error_stderr: Standard error of ``logical_error_rate``.
-        acceptance_rate: Probability of a zero syndrome on every check.
-        acceptance_stderr: Standard error of ``acceptance_rate``.
-        check_trigger_rates: Per check, the probability that its syndrome bit reads 1.
-        check_trigger_stderrs: Standard errors of ``check_trigger_rates``.
-        shots: Number of fault configurations sampled.
-    """
-
-    harmless_rate: float
-    harmless_stderr: float
-    logical_error_rate: float
-    logical_error_stderr: float
-    acceptance_rate: float
-    acceptance_stderr: float
-    check_trigger_rates: tuple[float, ...]
-    check_trigger_stderrs: tuple[float, ...]
-    shots: int
 
 
 @dataclass(frozen=True, eq=False)
@@ -142,9 +102,9 @@ class CheckedCircuit:
         input wires and wires immediately after 2-qubit gates are enumerated; errors after
         single qubit gates are folded into the next 2-qubit-gate wire.
 
-        These are the code's blind spots: :meth:`estimate_fault_rates` quantifies the noise
-        escaping through them, and an uncovered ``Z`` is the code-preserving condition
-        :func:`~qiskit_paulice.doping.dope_clifford_circuit` requires of doping wires.
+        These are the code's blind spots: an uncovered ``Z`` is the code-preserving
+        condition :func:`~qiskit_paulice.doping.dope_clifford_circuit` requires of doping
+        wires.
         """
         check_picker = _build_check_picker(
             self.circuit,
@@ -212,141 +172,6 @@ class CheckedCircuit:
             return (sub_array @ x) % 2
 
         return _aux
-
-    def estimate_fault_rates(
-        self,
-        noise_model: NoiseModel,
-        shots: int = 100_000,
-        seed: int | np.random.Generator | None = None,
-    ) -> FaultRates:
-        r"""Estimate acceptance, harmless-fault, logical-error, and check trigger rates.
-
-        One Monte Carlo fault simulation under ``noise_model`` yields all rates. A fault
-        configuration is *accepted* if it flips no check syndrome, and *harmless* if it is
-        nonidentity yet back-propagates to a diagonal Pauli on the input, acting as a global
-        phase on :math:`|0^n\rangle`. Doping converts at worst every harmless fault into a
-        harmful one (`arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`_, Sec. S2), so
-
-        .. math:: F_{\text{doped}} \;\geq\; F_{\text{Clifford}} - \Pr(H \mid A),
-
-        with :math:`F_{\text{Clifford}}` the measured post-selected fidelity of this
-        (undoped) circuit. The logical error rate is the residual error surviving
-        post-selection, evaluable for any noise model (unlike :attr:`cost`, fixed at pick
-        time); :attr:`uncovered_paulis` locates the blind spots behind it. Comparing the
-        predicted check trigger rates against measured syndrome data validates
-        ``noise_model`` itself, and thereby the harmless-rate correction.
-
-        Fault generators are resolved by the same Rust noise models the check picker
-        consumes, so placement, layer matching, and rate inference for uncharacterized edges
-        match :func:`~qiskit_paulice.checks.add_pauli_checks` exactly; a rate
-        :math:`\lambda` generator flips with probability :math:`(1 - e^{-2\lambda})/2`.
-        Readout errors enter syndromes and payload outcomes but, being classical, never the
-        state. Idling noise is rejected, mirroring check picking, which also ignores it.
-
-        Args:
-            noise_model: Noise to sample from -- uniform (:class:`float`),
-                :data:`.GateWiseNoise`, or :data:`.LayeredGateNoise` gate noise, plus
-                readout noise. Idling noise is not supported.
-            shots: Number of fault configurations to sample.
-            seed: Seed or generator for the fault sampling.
-
-        Returns:
-            The estimated rates with their standard errors.
-
-        Raises:
-            ValueError: The noise model is empty or unsupported, :attr:`circuit` contains a
-                non-Clifford instruction (estimate before doping, on the bound's reference
-                point), or no sampled configuration was accepted.
-        """
-        gate_noise = noise_model.gate_noise
-        models = []
-        if _is_uniform_gate_noise(gate_noise):
-            models.append(_RustNoiseModel.uniform_depolarizing(gate_noise))
-        elif _is_layered_gate_noise(gate_noise):
-            if any(inst.operation.name == "cx" for inst in self.circuit.data):
-                raise ValueError(
-                    "Layered gate noise requires a CZ-based circuit (the Rust layering "
-                    "pass does not support CX gates); transpile CX to CZ first."
-                )
-            models.append(_RustNoiseModel.layered(_convert_layered_noise(gate_noise)))
-        elif _is_gate_wise_noise(gate_noise):
-            models.append(_RustNoiseModel.gate_wise(_convert_gate_wise_noise(gate_noise)))
-        elif gate_noise is not None:
-            raise ValueError(f"Unrecognized gate noise specification: {gate_noise!r}")
-        if noise_model.idling_noise is not None:
-            # The Rust idling model's ALAP-delay rates are not trusted; check picking
-            # deliberately ignores idling_noise too (see checks.py). Reject rather than
-            # silently skip, so the estimate never misrepresents the requested model.
-            raise ValueError("Idling noise is not supported by estimate_fault_rates.")
-        if not models and noise_model.readout_noise is None:
-            raise ValueError("The noise model may not be empty.")
-        if noise_model.readout_noise is not None and not 0 <= noise_model.readout_noise < 0.5:
-            raise ValueError("readout_noise must lie in [0, 0.5).")
-        rates, x_img, z_img, full_clifford = _fault_channels(self.circuit, models)
-
-        masks = self._sub_array.astype(np.uint8)
-        signatures = x_img.astype(np.uint8) @ masks.T % 2
-        back = PauliList.from_symplectic(z_img, x_img).evolve(full_clifford, frame="h")
-        measured = np.array(sorted(self._cb_to_q.values()), dtype=int)
-        payload = np.array([q for q in measured if q not in set(self.check_qubits)], dtype=int)
-        # A fault flips payload outcome q iff its output image anticommutes with Z_q.
-        flip_rows = x_img[:, payload].astype(np.uint8)
-
-        # One row of XOR accumulators per shot; each generator firing XORs in its syndrome
-        # signature, payload outcome flips, and back-propagated symplectic rows.
-        # Poisson(shots * rate) firings spread uniformly over shots give i.i.d.
-        # Poisson(rate) counts per shot, whose odd-count (flip) probability is exactly the
-        # Pauli-Lindblad (1 - exp(-2 rate))/2.
-        rng = np.random.default_rng(seed)
-        syndrome = np.zeros((shots, len(masks)), dtype=np.uint8)
-        outcome = np.zeros((shots, len(payload)), dtype=np.uint8)
-        back_x = np.zeros((shots, self.circuit.num_qubits), dtype=np.uint8)
-        back_z = np.zeros_like(back_x)
-        channel = np.repeat(np.arange(len(rates)), rng.poisson(shots * rates))
-        shot = rng.integers(0, shots, len(channel))
-        np.bitwise_xor.at(syndrome, shot, signatures[channel])
-        np.bitwise_xor.at(outcome, shot, flip_rows[channel])
-        np.bitwise_xor.at(back_x, shot, back.x[channel].astype(np.uint8))
-        np.bitwise_xor.at(back_z, shot, back.z[channel].astype(np.uint8))
-        if noise_model.readout_noise is not None:
-            # A readout flip on measured qubit q toggles every check with q in its support,
-            # and the outcome bit itself when q is a payload qubit.
-            outcome_rows = (payload[None, :] == measured[:, None]).astype(np.uint8)
-            readout_rate = -np.log(1 - 2 * noise_model.readout_noise) / 2
-            index = np.repeat(
-                np.arange(len(measured)), rng.poisson(shots * readout_rate, len(measured))
-            )
-            shot = rng.integers(0, shots, len(index))
-            np.bitwise_xor.at(syndrome, shot, masks.T[measured[index]])
-            np.bitwise_xor.at(outcome, shot, outcome_rows[index])
-
-        accepted = ~syndrome.any(axis=1)
-        num_accepted = int(accepted.sum())
-        if num_accepted == 0:
-            raise ValueError(
-                f"None of the {shots} sampled fault configurations was accepted; increase "
-                "shots or reduce the noise strength."
-            )
-        nonidentity = (back_x | back_z).any(axis=1)
-        harmless = (accepted & nonidentity & ~back_x.any(axis=1)).sum() / num_accepted
-        logical = (accepted & outcome.any(axis=1)).sum() / num_accepted
-        acceptance = num_accepted / shots
-        triggers = syndrome.mean(axis=0)
-
-        def _stderr(probability: float, count: int) -> float:
-            return float(np.sqrt(probability * (1 - probability) / count))
-
-        return FaultRates(
-            harmless_rate=float(harmless),
-            harmless_stderr=_stderr(harmless, num_accepted),
-            logical_error_rate=float(logical),
-            logical_error_stderr=_stderr(logical, num_accepted),
-            acceptance_rate=float(acceptance),
-            acceptance_stderr=_stderr(acceptance, shots),
-            check_trigger_rates=tuple(float(p) for p in triggers),
-            check_trigger_stderrs=tuple(_stderr(float(p), shots) for p in triggers),
-            shots=shots,
-        )
 
     def box(
         self,
@@ -508,93 +333,3 @@ def _edge_to_layers(
         for a, b in layer:
             edge_to_layers[(min(a, b), max(a, b))].add(index)
     return dict(edge_to_layers)
-
-
-_RUSTIQ_GATES = {
-    "CX": CXGate(),
-    "CZ": CZGate(),
-    "H": HGate(),
-    "S": SGate(),
-    "Sd": SdgGate(),
-    "SqrtX": SXGate(),
-    "SqrtXd": SXdgGate(),
-}
-
-
-def _fault_channels(
-    circuit: QuantumCircuit, models: list[_RustNoiseModel]
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, Clifford]:
-    """Lindblad rates and output-frame images of every elementary fault channel.
-
-    Generator resolution -- noise placement, layer matching, and rate inference for
-    uncharacterized edges -- is delegated to the Rust noise ``models``, the same code the
-    check picker consumes; models are chained on each other's returned (possibly
-    re-layered) circuit exactly as the Rust ``Coverage`` does. One backward sweep per model
-    conjugates its generators to the circuit output: destabilizer row ``q`` of the suffix
-    tableau is the image of ``X_q``, stabilizer row ``q`` that of ``Z_q``, and a
-    generator's image is the XOR over its single-qubit components.
-
-    Returns:
-        ``(rates, x, z, full_clifford)``: per channel the Lindblad rate (flip probability
-        ``(1 - exp(-2 rate))/2``) and the symplectic rows of its output image, plus the
-        whole circuit's Clifford.
-
-    Raises:
-        ValueError: on a non-Clifford instruction or a non-terminal measurement.
-    """
-    touched: set[int] = set()
-    for inst in reversed(circuit.data):
-        qargs = [circuit.find_bit(qubit).index for qubit in inst.qubits]
-        if inst.operation.name == "measure":
-            if qargs[0] in touched:
-                raise ValueError(
-                    f"Qubit {qargs[0]} is used after its measurement; only terminal "
-                    "measurements are supported."
-                )
-        elif inst.operation.name != "barrier":
-            touched.update(qargs)
-    try:
-        gates, _ = _convert_to_rustiq_circuit(circuit)
-    except (ValueError, AssertionError) as exc:
-        raise ValueError(f"Non-Clifford instruction in circuit: {exc}") from exc
-
-    num_qubits = circuit.num_qubits
-    rates: list[float] = []
-    x_rows: list[np.ndarray] = []
-    z_rows: list[np.ndarray] = []
-    suffix = Clifford.from_label("I" * num_qubits)
-    for model in models:
-        generators, gates = model.resolve_generators(gates, num_qubits)
-        channels: dict[int, list[tuple[int, int, int]]] = defaultdict(list)
-        for components, rate in generators:
-            rates.append(rate)
-            x_rows.append(np.zeros(num_qubits, dtype=bool))
-            z_rows.append(np.zeros(num_qubits, dtype=bool))
-            for (gate_index, slot), pauli in components:
-                channels[gate_index].append((len(rates) - 1, slot, pauli))
-        suffix = Clifford.from_label("I" * num_qubits)
-        for gate_index in range(len(gates) - 1, -1, -1):
-            name, qubits = gates[gate_index]
-            for row, slot, pauli in channels.get(gate_index, ()):
-                _xor_image(x_rows[row], z_rows[row], suffix, qubits[slot], pauli)
-            suffix = suffix.dot(_RUSTIQ_GATES[name], qargs=qubits)
-        for row, qubit, pauli in channels.get(-1, ()):
-            _xor_image(x_rows[row], z_rows[row], suffix, qubit, pauli)
-
-    if not np.isfinite(rates).all() or any(rate < 0 for rate in rates):
-        raise ValueError("The noise model produced non-finite or negative Lindblad rates.")
-    x = np.asarray(x_rows, dtype=bool).reshape(len(x_rows), num_qubits)
-    z = np.asarray(z_rows, dtype=bool).reshape(len(z_rows), num_qubits)
-    return np.asarray(rates), x, z, suffix
-
-
-def _xor_image(
-    x_row: np.ndarray, z_row: np.ndarray, suffix: Clifford, qubit: int, pauli: int
-) -> None:
-    """XOR the suffix image of Pauli 1=X/2=Y/3=Z on ``qubit`` into a generator's rows."""
-    if pauli != 3:
-        x_row ^= suffix.destab_x[qubit]
-        z_row ^= suffix.destab_z[qubit]
-    if pauli != 1:
-        x_row ^= suffix.stab_x[qubit]
-        z_row ^= suffix.stab_z[qubit]

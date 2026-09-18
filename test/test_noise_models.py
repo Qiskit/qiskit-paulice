@@ -732,13 +732,12 @@ class TestUserFacingConvention(unittest.TestCase):
             places=12,
         )
 
-    def test_layered_non_matching_layer_raises(self):
-        """A layer key whose edges overlap (including duplicates) is rejected."""
-        for layer in (((0, 1), (1, 0)), ((0, 1), (1, 2))):
-            noise = NoiseModel(gate_noise={layer: [("IYX", 1e-3)]})
-            with self.assertRaises(ValueError) as cm:
-                _convert_layered_noise(noise.gate_noise)
-            self.assertIn("matching", str(cm.exception))
+    def test_layered_duplicate_edge_within_layer_raises(self):
+        """A layer key that lists the same edge twice (in either orientation) is rejected."""
+        noise = NoiseModel(gate_noise={((0, 1), (1, 0)): [("IYX", 1e-3)]})
+        with self.assertRaises(ValueError) as cm:
+            _convert_layered_noise(noise.gate_noise)
+        self.assertIn("twice", str(cm.exception))
 
     def test_from_backend_asymmetric_basis_mirrors_reverse_direction(self):
         """When ``from_backend`` is given an asymmetric ``pauli_bases``, the canonical
