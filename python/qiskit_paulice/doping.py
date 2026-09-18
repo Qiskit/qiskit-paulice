@@ -10,7 +10,7 @@
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 
-"""T-gate doping of Clifford circuits."""
+"""RZ-gate doping of Clifford circuits."""
 
 from __future__ import annotations
 
@@ -26,11 +26,11 @@ from .checked_circuit import CheckedCircuit
 
 
 class DopingSite(NamedTuple):
-    """A circuit wire at which a magic-injecting ``T`` gate is inserted.
+    """A circuit wire at which a doping ``RZ`` rotation is inserted.
 
     Attributes:
         qubit: Index of the qubit whose wire is doped.
-        after_instruction: Index (into ``circuit.data``) of the instruction the ``T`` gate
+        after_instruction: Index (into ``circuit.data``) of the instruction the rotation
             is inserted directly after; ``None`` places it before the first instruction.
     """
 
@@ -43,12 +43,12 @@ def dope_clifford_circuit(
     num_sites: int | None = None,
     *,
     wires: Literal["all", "after_entangling", "before_entangling"] = "all",
-    parametric: bool = False,
+    angle: float | None = np.pi / 4,
     seed: int | np.random.Generator | None = None,
 ) -> tuple[QuantumCircuit, list[DopingSite]] | tuple[CheckedCircuit, list[DopingSite]]:
-    r"""Insert magic-injecting ``T`` gates into a Clifford circuit.
+    r"""Dope a Clifford circuit with ``RZ`` rotations.
 
-    Each candidate wire is classified by conjugating the ``Z`` generator of a ``T`` placed
+    Each candidate wire is classified by conjugating the ``Z`` generator of a rotation placed
     there through the surrounding Clifford gates
     (`arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`_, Sec. S1.3). Every wire segment
     is a candidate, and the reference's three pruning rewrites are iterated to a fixed
@@ -57,7 +57,8 @@ def dope_clifford_circuit(
     all following rotations and forward-propagates to a diagonal at the output (it is
     invisible to sampling); merge equal-generator pairs that commute with every rotation
     between them, keeping the earliest (the reference removes one at random). Each returned
-    site therefore contributes an irreducible non-Clifford rotation.
+    site therefore contributes an irreducible rotation, which injects magic for any
+    non-Clifford ``angle``.
 
     A :class:`.CheckedCircuit` input restricts sites to payload wires where a ``Z`` error is
     undetected by every check (cf. :attr:`.CheckedCircuit.uncovered_paulis`), so all
@@ -76,11 +77,11 @@ def dope_clifford_circuit(
             one per qubit per entangling layer, as in the reference; ``"before_entangling"``
             only the wires directly preceding one. The two entangling rules differ only in
             which side of the intervening single-qubit gates a rotation sits.
-        parametric: Insert ``rz(dope[i])`` rotations (``dope[i]`` at ``sites[i]``) instead
-            of ``T`` gates: one template covers every doping configuration
-            (:math:`\pi/4` = ``T``, :math:`\pi/2` = ``S``, :math:`\pi` = ``Z``, ``0`` =
-            identity), and every assignment preserves the code of a
-            :class:`.CheckedCircuit`.
+        angle: Rotation angle of every inserted ``rz``; the default :math:`\pi/4` is a
+            ``T`` gate. ``None`` inserts ``rz(dope[i])`` at ``sites[i]`` instead: one
+            template covers every doping configuration (:math:`\pi/4` = ``T``,
+            :math:`\pi/2` = ``S``, :math:`\pi` = ``Z``, ``0`` = identity), and every
+            assignment preserves the code of a :class:`.CheckedCircuit`.
         seed: Seed or generator for the random site selection.
 
     Returns:
@@ -105,9 +106,9 @@ def dope_clifford_circuit(
     positions, qubits, gens, full_clifford = _sweep_wire_segments(circuit, site_qubits, wires)
 
     # The back-propagation of a generator P to the input is C^dag P C for the whole-circuit
-    # Clifford C; diagonal images are stabilizers of |0^n>, so such rotations inject no magic.
+    # Clifford C; a diagonal image stabilizes |0^n>, so the rotation only applies a phase.
     input_diagonal = ~gens.evolve(full_clifford, frame="h").x.any(axis=1)
-    output_diagonal = np.asarray(~gens.x.any(axis=1))
+    output_diagonal = ~gens.x.any(axis=1)
 
     # A wire preserves a check iff Z there commutes with the check's back-cumulant. By
     # conjugation through the suffix, that is the commutation of the forward-propagated
@@ -146,14 +147,11 @@ def dope_clifford_circuit(
     inserts: dict[int, list[int]] = {}
     for position, qubit in chosen:
         inserts.setdefault(position, []).append(qubit)
-    angles = iter(ParameterVector("dope", len(chosen))) if parametric else None
+    angles = iter(ParameterVector("dope", len(chosen))) if angle is None else None
     doped = circuit.copy_empty_like()
     for position in range(len(circuit.data) + 1):
         for qubit in inserts.get(position, ()):
-            if angles is None:
-                doped.t(qubit)
-            else:
-                doped.rz(next(angles), qubit)
+            doped.rz(angle if angles is None else next(angles), qubit)
         if position < len(circuit.data):
             doped.append(circuit.data[position])
 
@@ -177,7 +175,7 @@ def _sweep_wire_segments(
     multi-qubit gate.
 
     Returns:
-        Time-sorted ``(positions, qubits, gens, full_clifford)``: a ``T`` at candidate ``i``
+        Time-sorted ``(positions, qubits, gens, full_clifford)``: a rotation at candidate ``i``
         precedes ``circuit.data[positions[i]]`` on ``qubits[i]`` and has generator
         ``gens[i]`` at the circuit output; ``full_clifford`` is the whole circuit's Clifford.
 
@@ -245,13 +243,9 @@ def _prune_to_fixpoint(
     output_diagonal: np.ndarray,
     active: np.ndarray,
 ) -> None:
-    """Iterate the pruning rewrites of arXiv:2607.25941, Sec. S1.3 on ``active`` in place.
+    """Iterate the pruning rewrites of :func:`dope_clifford_circuit` on ``active`` in place.
 
-    Candidates must be time-sorted. A rotation is removed if it commutes with all previous
-    active rotations and back-propagates to a diagonal on the input, or commutes with all
-    following active rotations and forward-propagates to a diagonal on the output; of two
-    rotations with equal propagated generators commuting with every active rotation between
-    them, the later is removed. Repeats until no rewrite applies.
+    Candidates must be time-sorted; "previous" and "following" refer to active candidates.
     """
     changed = True
     while changed:

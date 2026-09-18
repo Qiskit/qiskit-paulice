@@ -18,6 +18,7 @@ import unittest
 
 import numpy as np
 from qiskit.circuit import QuantumCircuit
+from qiskit.exceptions import QiskitError
 from qiskit.quantum_info import (
     Clifford,
     Pauli,
@@ -59,6 +60,15 @@ def _paper_ansatz(num_qubits: int, seed: int) -> QuantumCircuit:
 def _position(site: DopingSite) -> int:
     """The number of instructions preceding a site's wire boundary."""
     return 0 if site.after_instruction is None else site.after_instruction + 1
+
+
+def _measure_positions(circuit: QuantumCircuit) -> dict[int, int]:
+    """Each measured qubit's index in ``circuit.data`` of its measurement."""
+    return {
+        circuit.find_bit(inst.qubits[0]).index: index
+        for index, inst in enumerate(circuit.data)
+        if inst.operation.name == "measure"
+    }
 
 
 def _split(circuit: QuantumCircuit, position: int) -> tuple[QuantumCircuit, QuantumCircuit]:
@@ -159,7 +169,7 @@ class TestDopeCliffordCircuit(unittest.TestCase):
         for circuit in (h_only, diagonal):
             doped, sites = dope_clifford_circuit(circuit)
             self.assertEqual(sites, [])
-            self.assertEqual(doped.count_ops().get("t", 0), 0)
+            self.assertEqual(doped.count_ops().get("rz", 0), 0)
         with self.assertRaises(ValueError):
             dope_clifford_circuit(diagonal, num_sites=1)
 
@@ -181,7 +191,7 @@ class TestDopeCliffordCircuit(unittest.TestCase):
         self.assertGreater(len(all_sites), 3)
         doped, sites = dope_clifford_circuit(circuit, num_sites=3, seed=42)
         self.assertEqual(len(sites), 3)
-        self.assertEqual(doped.count_ops()["t"], 3)
+        self.assertEqual(doped.count_ops()["rz"], 3)
         self.assertTrue(set(sites) <= set(all_sites))
         self._assert_irreducible(circuit, sites)
         _, again = dope_clifford_circuit(circuit, num_sites=3, seed=42)
@@ -191,14 +201,14 @@ class TestDopeCliffordCircuit(unittest.TestCase):
         with self.assertRaises(ValueError):
             dope_clifford_circuit(circuit, num_sites=-1)
 
-    def test_only_t_gates_inserted(self):
-        """The doped circuit is the original instruction sequence with only T gates added."""
+    def test_only_rz_gates_inserted(self):
+        """The doped circuit is the original instruction sequence with only rz gates added."""
         circuit = _paper_ansatz(4, seed=3)
         doped, sites = dope_clifford_circuit(circuit, num_sites=3, seed=0)
         stripped = [
             (inst.name, tuple(doped.find_bit(q).index for q in inst.qubits))
             for inst in doped
-            if inst.name != "t"
+            if inst.name != "rz"
         ]
         original = [
             (inst.name, tuple(circuit.find_bit(q).index for q in inst.qubits)) for inst in circuit
@@ -221,22 +231,18 @@ class TestDopeCliffordCircuit(unittest.TestCase):
         doped, sites = dope_clifford_circuit(circuit)
         self.assertGreater(len(sites), 0)
         self.assertIn("barrier", doped.count_ops())
-        self.assertEqual(doped.count_ops()["t"], len(sites))
+        self.assertEqual(doped.count_ops()["rz"], len(sites))
         self.assertEqual(len(doped), len(circuit) + len(sites))
 
     def test_measured_circuit(self):
         """Terminal measurements are preserved and no site lies past a qubit's measurement."""
         circuit = _paper_ansatz(3, seed=1)
         circuit.measure_all()
-        measure_pos = {
-            circuit.find_bit(inst.qubits[0]).index: index
-            for index, inst in enumerate(circuit.data)
-            if inst.operation.name == "measure"
-        }
+        measure_pos = _measure_positions(circuit)
         doped, sites = dope_clifford_circuit(circuit)
         self.assertGreater(len(sites), 0)
         self.assertEqual(doped.count_ops()["measure"], 3)
-        self.assertEqual(doped.count_ops()["t"], len(sites))
+        self.assertEqual(doped.count_ops()["rz"], len(sites))
         for site in sites:
             self.assertLessEqual(_position(site), measure_pos[site.qubit])
         circuit.x(0)
@@ -254,11 +260,7 @@ class TestCheckedCircuitDoping(unittest.TestCase):
             self.assertEqual(getattr(doped, field), getattr(checked, field))
         num_qubits = checked.circuit.num_qubits
         # Sites avoid ancilla wires and post-measurement wires.
-        measure_pos = {
-            checked.circuit.find_bit(inst.qubits[0]).index: index
-            for index, inst in enumerate(checked.circuit.data)
-            if inst.operation.name == "measure"
-        }
+        measure_pos = _measure_positions(checked.circuit)
         for site in sites:
             self.assertNotIn(site.qubit, checked.check_qubits)
             self.assertLessEqual(_position(site), measure_pos[site.qubit])
@@ -285,72 +287,58 @@ class TestCheckedCircuitDoping(unittest.TestCase):
         self.assertGreater(len(sites), 0)
         self._assert_code_preserved(checked, doped, sites)
 
-    def test_hardware_style_template(self):
-        """A parametric after-entangling template keeps every syndrome at any angles."""
+    def test_template_preserves_code(self):
+        """A parametrized template keeps every syndrome at any angles, for every wires rule."""
         checked = _checked_circuit()
-        doped, sites = dope_clifford_circuit(checked, wires="after_entangling", parametric=True)
-        self.assertGreater(len(sites), 0)
-        for site in sites:
-            inst = checked.circuit.data[site.after_instruction]
-            self.assertGreater(inst.operation.num_qubits, 1)
-        angles = np.random.default_rng(0).uniform(0, 2 * np.pi, len(sites))
-        bound = doped.circuit.assign_parameters(angles)
         original = _syndrome_values(checked, checked.circuit)
-        np.testing.assert_allclose(_syndrome_values(checked, bound), original, atol=1e-10)
+        for wires in ("all", "after_entangling", "before_entangling"):
+            with self.subTest(wires=wires):
+                doped, sites = dope_clifford_circuit(checked, wires=wires, angle=None)
+                self.assertGreater(len(sites), 0)
+                angles = np.random.default_rng(0).uniform(0, 2 * np.pi, len(sites))
+                bound = doped.circuit.assign_parameters(angles)
+                np.testing.assert_allclose(_syndrome_values(checked, bound), original, atol=1e-10)
 
 
 class TestHardwareStyle(unittest.TestCase):
-    """Tests for the ``wires`` site restriction and ``parametric`` templates."""
+    """Tests for the ``wires`` site restriction and ``angle=None`` templates."""
 
-    def test_after_entangling(self):
-        """Sites are restricted to wires directly following an entangling gate."""
+    def test_entangling_wires(self):
+        """Sites are restricted to wires directly after, or directly before, an entangling gate."""
         circuit = _paper_ansatz(5, seed=1)
-        _, all_sites = dope_clifford_circuit(circuit)
-        doped, sites = dope_clifford_circuit(circuit, wires="after_entangling")
-        self.assertGreater(len(sites), 0)
-        self.assertLessEqual(len(sites), len(all_sites))
-        self.assertEqual(doped.count_ops()["t"], len(sites))
-        for site in sites:
-            inst = circuit.data[site.after_instruction]
-            self.assertGreater(inst.operation.num_qubits, 1)
-            self.assertIn(site.qubit, [circuit.find_bit(q).index for q in inst.qubits])
-
-    def test_before_entangling(self):
-        """Sites are restricted to wires directly preceding an entangling gate."""
-        circuit = _paper_ansatz(5, seed=1)
-        doped, sites = dope_clifford_circuit(circuit, wires="before_entangling")
-        self.assertGreater(len(sites), 0)
-        self.assertEqual(doped.count_ops()["t"], len(sites))
-        for site in sites:
-            following = 0 if site.after_instruction is None else site.after_instruction + 1
-            inst = circuit.data[following]
-            self.assertGreater(inst.operation.num_qubits, 1)
-            self.assertIn(site.qubit, [circuit.find_bit(q).index for q in inst.qubits])
-        # In the doped circuit, the next gate on each T's qubit is entangling
-        for i, inst in enumerate(doped.data):
-            if inst.operation.name == "t":
-                following = next(d for d in doped.data[i + 1 :] if inst.qubits[0] in d.qubits)
-                self.assertGreater(following.operation.num_qubits, 1)
-
-    def test_before_entangling_preserves_code(self):
-        """A before-entangling template keeps every syndrome at any angles."""
-        checked = _checked_circuit()
-        doped, sites = dope_clifford_circuit(checked, wires="before_entangling", parametric=True)
-        self.assertGreater(len(sites), 0)
-        angles = np.random.default_rng(0).uniform(0, 2 * np.pi, len(sites))
-        bound = doped.circuit.assign_parameters(angles)
-        original = _syndrome_values(checked, checked.circuit)
-        np.testing.assert_allclose(_syndrome_values(checked, bound), original, atol=1e-10)
+        for wires, offset in (("after_entangling", -1), ("before_entangling", 0)):
+            with self.subTest(wires=wires):
+                doped, sites = dope_clifford_circuit(circuit, wires=wires)
+                self.assertGreater(len(sites), 0)
+                self.assertEqual(doped.count_ops()["rz"], len(sites))
+                for site in sites:
+                    inst = circuit.data[_position(site) + offset]
+                    self.assertGreater(inst.operation.num_qubits, 1)
+                    self.assertIn(site.qubit, [circuit.find_bit(q).index for q in inst.qubits])
 
     def test_invalid_wires(self):
         """An unknown ``wires`` value is rejected."""
         with self.assertRaisesRegex(ValueError, "wires must be"):
             dope_clifford_circuit(_paper_ansatz(3, seed=1), wires="between")
 
-    def test_parametric_template(self):
-        """One template reproduces T doping at pi/4 and the base circuit at 0."""
+    def test_angle(self):
+        """Sites are angle-independent; a Clifford angle yields a Clifford doped circuit."""
         circuit = _paper_ansatz(4, seed=1)
-        template, sites = dope_clifford_circuit(circuit, parametric=True)
+        default, sites = dope_clifford_circuit(circuit)
+        s_doped, s_sites = dope_clifford_circuit(circuit, angle=np.pi / 2)
+        self.assertEqual(s_sites, sites)
+        self.assertEqual(
+            [inst.operation.params[0] for inst in s_doped.data if inst.operation.name == "rz"],
+            [np.pi / 2] * len(sites),
+        )
+        Clifford(s_doped.remove_final_measurements(inplace=False))
+        with self.assertRaises(QiskitError):
+            Clifford(default.remove_final_measurements(inplace=False))
+
+    def test_parametric_template(self):
+        """One template reproduces the default doping at pi/4 and the base circuit at 0."""
+        circuit = _paper_ansatz(4, seed=1)
+        template, sites = dope_clifford_circuit(circuit, angle=None)
         self.assertEqual(len(template.parameters), len(sites))
         t_doped, t_sites = dope_clifford_circuit(circuit)
         self.assertEqual(sites, t_sites)
