@@ -26,11 +26,12 @@ from qiskit.quantum_info import Clifford, Pauli
 from qiskit.transpiler.passes import RemoveBarriers
 from qiskit_paulice import CheckedCircuit, UncoveredPauli, add_pauli_checks
 from qiskit_paulice._internal import NoiseModel as _RustNoiseModel
+from qiskit_paulice._internal.conversion import convert_gate_wise_noise
 from qiskit_paulice._internal.conversion import (
     convert_to_rustiq_circuit as _convert_to_rustiq_circuit,
 )
 from qiskit_paulice.checked_circuit import BOXING_DEFAULTS, _fault_channels
-from qiskit_paulice.noise_models import NoiseModel, _convert_gate_wise_noise
+from qiskit_paulice.noise_models import NoiseModel
 from samplomatic.annotations import InjectNoise
 from samplomatic.transpiler import generate_boxing_pass_manager
 from samplomatic.utils import get_annotation
@@ -619,7 +620,7 @@ class TestCoverageConsistency(unittest.TestCase):
             for inst in circuit.data
             if len(inst.qubits) == 2
         }
-        gate_noise = _convert_gate_wise_noise({e: [(p, 0.01) for p in singles] for e in edges})
+        gate_noise = convert_gate_wise_noise({e: [(p, 0.01) for p in singles] for e in edges})
         rates, x_img, _, _ = _fault_channels(circuit, _RustNoiseModel.gate_wise(gate_noise))
 
         masks = np.zeros((len(checked.check_support), circuit.num_qubits), dtype=np.uint8)

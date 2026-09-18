@@ -7,4 +7,7 @@ upgrade:
     dropping it let callers believe check placement had accounted for idling noise.
     :meth:`qiskit_paulice.CheckedCircuit.estimate_fault_rates` rejects it for the same
     reason. Pass ``idling_noise=None`` (the default) to restore the previous effective
-    behavior.
+    behavior. Both entry points now share one validation: an unrecognized ``gate_noise``
+    specification (previously ignored by ``add_pauli_checks``), ``readout_noise`` outside
+    ``[0, 0.5)``, and layered gate noise on a circuit containing CX gates (previously a Rust
+    panic) all raise a ``ValueError``.

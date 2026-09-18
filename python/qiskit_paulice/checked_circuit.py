@@ -30,16 +30,10 @@ from samplomatic.transpiler import generate_boxing_pass_manager
 
 from ._internal import Metric as _Metric
 from ._internal import NoiseModel as _RustNoiseModel
+from ._internal.conversion import convert_noise_model as _convert_noise_model
 from ._internal.conversion import convert_to_rustiq_circuit as _convert_to_rustiq_circuit
 from ._internal.utils import build_check_picker as _build_check_picker
-from .noise_models import (
-    NoiseModel,
-    _convert_gate_wise_noise,
-    _convert_layered_noise,
-    _is_gate_wise_noise,
-    _is_layered_gate_noise,
-    _is_uniform_gate_noise,
-)
+from .noise_models import NoiseModel
 
 # Non-unitary instructions :meth:`CheckedCircuit.box` accepts; all else is rejected.
 _NON_GATES = frozenset({"measure", "barrier"})
@@ -75,18 +69,17 @@ class FaultRates(NamedTuple):
     r"""Monte Carlo fault-rate estimates for a checked circuit, from one common sample set.
 
     Attributes:
-        harmless_rate: Fraction of accepted fault configurations that are nonidentity yet
-            back-propagate to a diagonal Pauli on the circuit input (a global phase on
-            :math:`|0^n\rangle`).
+        harmless_rate: Fraction of shots resulting in an error that backpropagates to a
+            diagonal Pauli on the circuit input, applying a global phase to :math:`|0^n\rangle`.
         harmless_stderr: Standard error of ``harmless_rate``.
-        logical_error_rate: Fraction of accepted fault configurations that flip some
-            payload measurement outcome.
+        logical_error_rate: Fraction of shots resulting in an error that flips one or more
+            payload measurement outcomes.
         logical_error_stderr: Standard error of ``logical_error_rate``.
         acceptance_rate: Probability of a zero syndrome on every check.
         acceptance_stderr: Standard error of ``acceptance_rate``.
         check_trigger_rates: Per check, the probability that its syndrome bit reads 1.
         check_trigger_stderrs: Standard errors of ``check_trigger_rates``.
-        shots: Number of fault configurations sampled.
+        shots: Number of noisy shots used to generate the instance's fields.
     """
 
     harmless_rate: float
@@ -141,9 +134,6 @@ class CheckedCircuit:
         Each entry is an ``UncoveredPauli(qubit, after_instruction, pauli)`` triple. Only
         input wires and wires immediately after 2-qubit gates are enumerated; errors after
         single qubit gates are folded into the next 2-qubit-gate wire.
-
-        These are the code's blind spots: :meth:`estimate_fault_rates` quantifies the noise
-        escaping through them.
         """
         check_picker = _build_check_picker(
             self.circuit,
@@ -220,65 +210,32 @@ class CheckedCircuit:
     ) -> FaultRates:
         r"""Estimate acceptance, harmless-fault, logical-error, and check trigger rates.
 
-        One Monte Carlo fault simulation under ``noise_model`` yields all rates. A fault
-        configuration is *accepted* if it flips no check syndrome, and *harmless* if it is
-        nonidentity yet back-propagates to a diagonal Pauli on the input, acting as a global
-        phase on :math:`|0^n\rangle`. Doping converts at worst every harmless fault into a
-        harmful one (`arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`_, Sec. S2), so
+        One noisy Monte Carlo sampling under ``noise_model`` yields all rates. A shot is
+        *accepted* if it flips no check syndrome. It is *harmless* if it is non-identity yet
+        backpropagates to a diagonal Pauli on the input, acting as a global phase on
+        :math:`|0^n\rangle`. Doping converts at worst every harmless fault into a harmful
+        one (`arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`_, Sec. S2), so
 
         .. math:: F_{\text{doped}} \;\geq\; F_{\text{Clifford}} - \Pr(H \mid A),
 
         with :math:`F_{\text{Clifford}}` the measured post-selected fidelity of this
         (undoped) circuit. The logical error rate is the residual error surviving
-        post-selection, evaluable for any noise model (unlike :attr:`cost`, fixed at pick
-        time); :attr:`uncovered_paulis` locates the blind spots behind it. Comparing the
-        predicted check trigger rates against measured syndrome data validates
-        ``noise_model`` itself, and thereby the harmless-rate correction.
-
-        Fault generators are resolved by the same Rust noise models the check picker
-        consumes, so placement, layer matching, and rate inference for uncharacterized edges
-        match :func:`~qiskit_paulice.checks.add_pauli_checks` exactly; a rate
-        :math:`\lambda` generator flips with probability :math:`(1 - e^{-2\lambda})/2`.
-        Readout errors enter syndromes and payload outcomes but, being classical, never the
-        state. Idling noise is rejected, as in check picking.
+        post-selection. Comparing the predicted check trigger rates against measured syndrome
+        data is a useful way to gain insight into noise model agreement with the true noise.
 
         Args:
-            noise_model: Noise to sample from -- uniform (:class:`float`),
-                :data:`.GateWiseNoise`, or :data:`.LayeredGateNoise` gate noise, plus
-                readout noise. Idling noise is not supported.
-            shots: Number of fault configurations to sample.
-            seed: Seed or generator for the fault sampling.
+            noise_model: Noise to apply during Monte Carlo sampling.
+            shots: Number of noisy samples configurations to draw.
+            seed: Seed for the fault sampling.
 
         Returns:
-            The estimated rates with their standard errors.
+            The estimated fault rates with their standard errors.
 
         Raises:
             ValueError: The noise model is empty or unsupported, :attr:`circuit` contains a
-                non-Clifford instruction (estimate before doping, on the bound's reference
-                point), or no sampled configuration was accepted.
+                non-Clifford instruction, or no sampled configuration was accepted.
         """
-        gate_noise = noise_model.gate_noise
-        model = None
-        if _is_uniform_gate_noise(gate_noise):
-            model = _RustNoiseModel.uniform_depolarizing(gate_noise)
-        elif _is_layered_gate_noise(gate_noise):
-            if any(inst.operation.name == "cx" for inst in self.circuit.data):
-                raise ValueError(
-                    "Layered gate noise requires a CZ-based circuit (the Rust layering "
-                    "pass does not support CX gates); transpile CX to CZ first."
-                )
-            model = _RustNoiseModel.layered(_convert_layered_noise(gate_noise))
-        elif _is_gate_wise_noise(gate_noise):
-            model = _RustNoiseModel.gate_wise(_convert_gate_wise_noise(gate_noise))
-        elif gate_noise is not None:
-            raise ValueError(f"Unrecognized gate noise specification: {gate_noise!r}")
-        if noise_model.idling_noise is not None:
-            # The Rust idling model's rates are not trusted; add_pauli_checks rejects it too.
-            raise ValueError("Idling noise is not supported by estimate_fault_rates.")
-        if model is None and noise_model.readout_noise is None:
-            raise ValueError("The noise model may not be empty.")
-        if noise_model.readout_noise is not None and not 0 <= noise_model.readout_noise < 0.5:
-            raise ValueError("readout_noise must lie in [0, 0.5).")
+        model = _convert_noise_model(noise_model, self.circuit)
         rates, x_img, z_img, full_clifford = _fault_channels(self.circuit, model)
 
         masks = self._sub_array.astype(np.uint8)

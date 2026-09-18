@@ -28,15 +28,9 @@ from qiskit.transpiler.passes import BasisTranslator, UnrollCustomDefinitions
 from ._internal import Metric as _Metric
 from ._internal import NoiseModel as _NoiseModel
 from ._internal import pick_checks as _pick_checks
+from ._internal.conversion import convert_noise_model as _convert_noise_model
 from .checked_circuit import CheckedCircuit
-from .noise_models import (
-    NoiseModel,
-    _convert_gate_wise_noise,
-    _convert_layered_noise,
-    _is_gate_wise_noise,
-    _is_layered_gate_noise,
-    _is_uniform_gate_noise,
-)
+from .noise_models import NoiseModel
 
 
 def add_pauli_checks(
@@ -126,13 +120,6 @@ def add_pauli_checks(
         metric = _Metric.logical_error_rate(cost_nshots)
     else:
         raise ValueError(f"Invalid cost value: {cost}")
-
-    if noise_model.idling_noise is not None:
-        # The Rust idling model's ALAP-delay rates are not trusted. Reject rather than
-        # silently ignore (the historical behavior), so callers never believe check
-        # placement accounted for idling; estimate_fault_rates rejects it for the same
-        # reason.
-        raise ValueError("Idling noise is not supported by add_pauli_checks.")
 
     circuit = circuit.copy()
 
@@ -253,24 +240,10 @@ def add_pauli_checks(
             )
         picker_targets = [int(q) for q in target_qubits]
 
-    gate_noise = noise_model.gate_noise
-    _gate_noise = None
-    if gate_noise is not None:
-        if _is_uniform_gate_noise(gate_noise):
-            _gate_noise = _NoiseModel.uniform_depolarizing(gate_noise)
-        elif _is_layered_gate_noise(gate_noise):
-            _gate_noise = _NoiseModel.layered(_convert_layered_noise(gate_noise))
-        elif _is_gate_wise_noise(gate_noise):
-            _gate_noise = _NoiseModel.gate_wise(_convert_gate_wise_noise(gate_noise))
-    _readout_noise = (
-        _NoiseModel.readout(noise_model.readout_noise)
-        if noise_model.readout_noise is not None
-        else None
-    )
-
-    _noise_model = [x for x in (_gate_noise, _readout_noise) if x is not None]
-    if len(_noise_model) == 0:
-        raise ValueError("The noise model may not be empty.")
+    _gate_noise = _convert_noise_model(noise_model, circuit)
+    _noise_model = [_gate_noise] if _gate_noise is not None else []
+    if noise_model.readout_noise is not None:
+        _noise_model.append(_NoiseModel.readout(noise_model.readout_noise))
     result = _pick_checks(
         virtual_circuit,
         picker_targets,
