@@ -98,6 +98,16 @@ def _gate_names(circ: QuantumCircuit) -> set[str]:
     return {i.operation.name for i in circ.data if i.operation.name not in ("measure", "barrier")}
 
 
+class TestAddPauliChecksValidation(unittest.TestCase):
+    """Input validation of :func:`add_pauli_checks`."""
+
+    def test_idling_noise_rejected(self):
+        """Idling noise is loudly rejected, never silently ignored."""
+        noise = NoiseModel(gate_noise=1e-3, idling_noise=1e-4)
+        with self.assertRaisesRegex(ValueError, "[Ii]dling"):
+            add_pauli_checks(_clifford(), [1], noise, seed=0)
+
+
 class TestAddPauliChecksOutputBasis(unittest.TestCase):
     """Output circuits are returned in the input circuit's gate set."""
 
