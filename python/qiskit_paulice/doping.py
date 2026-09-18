@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 import numpy as np
 from qiskit.circuit import ParameterVector, QuantumCircuit
@@ -31,7 +31,7 @@ class DopingSite(NamedTuple):
     Attributes:
         qubit: Index of the qubit whose wire is doped.
         after_instruction: Index (into ``circuit.data``) of the instruction the ``T`` gate
-            is inserted after; ``None`` means the gate sits on the qubit's input wire.
+            is inserted directly after; ``None`` places it before the first instruction.
     """
 
     qubit: int
@@ -40,9 +40,9 @@ class DopingSite(NamedTuple):
 
 def dope_clifford_circuit(
     circuit: QuantumCircuit | CheckedCircuit,
-    num_t_gates: int | None = None,
+    num_sites: int | None = None,
     *,
-    after_entangling_only: bool = False,
+    wires: Literal["all", "after_entangling", "before_entangling"] = "all",
     parametric: bool = False,
     seed: int | np.random.Generator | None = None,
 ) -> tuple[QuantumCircuit, list[DopingSite]] | tuple[CheckedCircuit, list[DopingSite]]:
@@ -68,13 +68,14 @@ def dope_clifford_circuit(
         circuit: The Clifford circuit to dope, or a :class:`.CheckedCircuit` whose spacetime
             code the doping must preserve. Barriers and terminal measurements are ignored;
             sites past a qubit's measurement are excluded.
-        num_t_gates: Number of ``T`` gates to insert, drawn uniformly from the valid sites;
+        num_sites: Number of sites to dope, drawn uniformly from the valid sites;
             ``None`` uses every valid site. A drawn subset may itself be further reducible;
-            pruned-away draws are redrawn until ``num_t_gates`` irreducible sites remain.
-        after_entangling_only: Restrict sites to wires directly following an entangling
-            gate, as in the reference: a ``Z`` rotation there merges into the following
-            single-qubit layer as a zero-cost virtual ``RZ``, so every doping configuration
-            shares one pulse schedule.
+            pruned-away draws are redrawn until ``num_sites`` irreducible sites remain.
+        wires: The candidate wires. ``"all"`` considers every wire segment;
+            ``"after_entangling"`` only the wires directly following a multi-qubit gate,
+            one per qubit per entangling layer, as in the reference; ``"before_entangling"``
+            only the wires directly preceding one. The two entangling rules differ only in
+            which side of the intervening single-qubit gates a rotation sits.
         parametric: Insert ``rz(dope[i])`` rotations (``dope[i]`` at ``sites[i]``) instead
             of ``T`` gates: one template covers every doping configuration
             (:math:`\pi/4` = ``T``, :math:`\pi/2` = ``S``, :math:`\pi` = ``Z``, ``0`` =
@@ -89,17 +90,19 @@ def dope_clifford_circuit(
 
     Raises:
         ValueError: ``circuit`` contains a non-Clifford instruction or a non-terminal
-            measurement, ``num_t_gates`` is out of range, or no irreducible subset of that
-            size could be drawn.
+            measurement, ``wires`` is not one of the allowed values, ``num_sites`` is out
+            of range, or no irreducible subset of that size could be drawn.
     """
+    if wires not in ("all", "after_entangling", "before_entangling"):
+        raise ValueError(
+            f"wires must be 'all', 'after_entangling', or 'before_entangling', not {wires!r}."
+        )
     checked = None
     if isinstance(circuit, CheckedCircuit):
         checked = circuit
         circuit = circuit.circuit
     site_qubits = set(range(circuit.num_qubits)) - set(checked.check_qubits if checked else ())
-    positions, qubits, gens, full_clifford = _sweep_wire_segments(
-        circuit, site_qubits, after_entangling_only
-    )
+    positions, qubits, gens, full_clifford = _sweep_wire_segments(circuit, site_qubits, wires)
 
     # The back-propagation of a generator P to the input is C^dag P C for the whole-circuit
     # Clifford C; diagonal images are stabilizers of |0^n>, so such rotations inject no magic.
@@ -115,11 +118,11 @@ def dope_clifford_circuit(
     _prune_to_fixpoint(gens, input_diagonal, output_diagonal, active)
     valid = [int(i) for i in np.flatnonzero(active)]
 
-    if num_t_gates is None:
+    if num_sites is None:
         chosen_idx = valid
-    elif not 0 <= num_t_gates <= len(valid):
+    elif not 0 <= num_sites <= len(valid):
         raise ValueError(
-            f"num_t_gates ({num_t_gates}) must be between 0 and the number of valid doping "
+            f"num_sites ({num_sites}) must be between 0 and the number of valid doping "
             f"sites ({len(valid)})."
         )
     else:
@@ -127,12 +130,12 @@ def dope_clifford_circuit(
         rng = np.random.default_rng(seed)
         pool = [valid[i] for i in rng.permutation(len(valid))]
         selected = np.zeros(len(gens), dtype=bool)
-        while need := num_t_gates - int(selected.sum()):
+        while need := num_sites - int(selected.sum()):
             if not pool:
                 raise ValueError(
                     f"Could only draw {int(selected.sum())} irreducible doping sites of "
-                    f"the requested {num_t_gates}; request fewer T gates or pass "
-                    "num_t_gates=None."
+                    f"the requested {num_sites}; request fewer sites or pass "
+                    "num_sites=None."
                 )
             selected[pool[:need]] = True
             del pool[:need]
@@ -161,16 +164,17 @@ def dope_clifford_circuit(
 
 
 def _sweep_wire_segments(
-    circuit: QuantumCircuit, site_qubits: set[int], entangling_only: bool
+    circuit: QuantumCircuit, site_qubits: set[int], wires: str
 ) -> tuple[np.ndarray, np.ndarray, PauliList, Clifford]:
     """Enumerate candidate sites, one per wire segment, with output-propagated generators.
 
     Sweeps the wire boundaries backward, maintaining the suffix Clifford ``S``; stabilizer
     row ``q`` of its tableau is the forward propagation ``S Z_q S^dag``. All boundaries of a
     wire segment (a maximal gate-free run on one qubit) share one generator with no rotation
-    between them, so its earliest boundary represents it exhaustively. Segments past a
-    terminal measurement are skipped; ``entangling_only`` keeps only wires directly
-    following a multi-qubit gate.
+    between them, so one boundary represents it exhaustively. Segments past a terminal
+    measurement are skipped; ``wires`` selects every segment (``"all"``) or only those
+    directly following (``"after_entangling"``) or preceding (``"before_entangling"``) a
+    multi-qubit gate.
 
     Returns:
         Time-sorted ``(positions, qubits, gens, full_clifford)``: a ``T`` at candidate ``i``
@@ -209,7 +213,8 @@ def _sweep_wire_segments(
                 )
             continue
         touched.update(qargs)
-        if len(qargs) > 1 or not entangling_only:
+        entangling = len(qargs) > 1
+        if wires == "all" or (wires == "after_entangling" and entangling):
             for qubit in qargs:
                 if qubit in site_qubits:
                     _record(position + 1, qubit)
@@ -217,7 +222,12 @@ def _sweep_wire_segments(
             suffix = suffix.dot(inst.operation, qargs=qargs)
         except QiskitError as exc:
             raise ValueError(f"Non-Clifford instruction in circuit: {name!r}") from exc
-    if not entangling_only:
+        if wires == "before_entangling" and entangling:
+            # The suffix now includes this gate, as seen by a rotation directly before it.
+            for qubit in qargs:
+                if qubit in site_qubits:
+                    _record(position, qubit)
+    if wires == "all":
         for qubit in sorted(site_qubits):
             _record(0, qubit)
 

@@ -5,3 +5,4 @@ Qiskit Paulice Guides
   :maxdepth: 1
 
    Quickstart guide <quickstart.ipynb>
+   Doping Clifford circuits <doping.ipynb>
