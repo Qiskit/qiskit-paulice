@@ -15,12 +15,15 @@
 from . import _internal
 from .checked_circuit import CheckedCircuit, UncoveredPauli
 from .checks import add_pauli_checks
+from .doping import DopingSite, dope_clifford_circuit
 from .noise_models import NoiseModel
 
 __all__ = [
     "CheckedCircuit",
+    "DopingSite",
     "NoiseModel",
     "UncoveredPauli",
     "_internal",
     "add_pauli_checks",
+    "dope_clifford_circuit",
 ]

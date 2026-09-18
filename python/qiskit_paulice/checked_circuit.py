@@ -96,16 +96,15 @@ class CheckedCircuit:
 
     @cached_property
     def uncovered_paulis(self) -> tuple[UncoveredPauli, ...]:
-        """Locations where a single qubit Pauli error is undetectable by some checks.
+        """Locations where a single qubit Pauli error is undetectable by the checks.
 
-        Each entry is an ``UncoveredPauli(qubit, after_instruction, pauli)`` triple,
-        where ``qubit`` is the qubit of the single-qubit error, ``after_instruction``
-        is the ``circuit.data`` index of the instruction which immediately precedes
-        the error, and ``pauli`` is the type of error (``"X"``, ``"Y"``, or ``"Z"``).
+        Each entry is an ``UncoveredPauli(qubit, after_instruction, pauli)`` triple. Only
+        input wires and wires immediately after 2-qubit gates are enumerated; errors after
+        single qubit gates are folded into the next 2-qubit-gate wire.
 
-        Only locations on input wires and immediately after 2-qubit gates are
-        enumerated; errors after single qubit gates are folded into the next
-        2-qubit-gate wire.
+        These are the code's blind spots: an uncovered ``Z`` is the code-preserving
+        condition :func:`~qiskit_paulice.doping.dope_clifford_circuit` requires of doping
+        wires.
         """
         check_picker = _build_check_picker(
             self.circuit,
