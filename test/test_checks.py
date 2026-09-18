@@ -98,6 +98,26 @@ def _gate_names(circ: QuantumCircuit) -> set[str]:
     return {i.operation.name for i in circ.data if i.operation.name not in ("measure", "barrier")}
 
 
+class TestAddPauliChecksValidation(unittest.TestCase):
+    """Input validation of :func:`add_pauli_checks`."""
+
+    def test_idling_noise_rejected(self):
+        """Idling noise is loudly rejected, never silently ignored."""
+        noise = NoiseModel(gate_noise=1e-3, idling_noise=1e-4)
+        with self.assertRaisesRegex(ValueError, "[Ii]dling"):
+            add_pauli_checks(_clifford(), [1], noise, seed=0)
+
+    def test_invalid_noise_rejected(self):
+        """Unrecognized gate noise, out-of-range readout, and layered noise on CX gates raise."""
+        for noise, message in (
+            (NoiseModel(gate_noise="bogus"), "Unrecognized"),
+            (NoiseModel(gate_noise=1e-3, readout_noise=0.5), "readout_noise"),
+            (NoiseModel(gate_noise={((0, 1),): [("IXX", 1e-3)]}), "CZ-based"),
+        ):
+            with self.subTest(noise=noise), self.assertRaisesRegex(ValueError, message):
+                add_pauli_checks(_clifford(), [1], noise, seed=0)
+
+
 class TestAddPauliChecksOutputBasis(unittest.TestCase):
     """Output circuits are returned in the input circuit's gate set."""
 
@@ -539,9 +559,13 @@ class TestAddPauliChecksErrorPaths(unittest.TestCase):
             add_pauli_checks(_clifford(), [0], NoiseModel(), seed=0)
 
     def test_empty_gate_noise_dict_is_ignored(self):
-        # Empty dict trips the early-return guards in _is_layered_gate_noise /
-        # _is_gate_wise_noise; with non-None readout, the call still succeeds.
+        # An empty gate-noise dict means no gate noise; readout noise keeps the model nonempty.
         noise = NoiseModel(gate_noise={}, readout_noise=1e-2)
+        result = add_pauli_checks(_clifford(), [0], noise, seed=0)
+        _assert_variant_progression(self, result, expected_targets=[0])
+
+    def test_gate_noise_only(self):
+        noise = NoiseModel(gate_noise=1e-3)
         result = add_pauli_checks(_clifford(), [0], noise, seed=0)
         _assert_variant_progression(self, result, expected_targets=[0])
 

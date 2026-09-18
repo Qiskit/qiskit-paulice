@@ -532,4 +532,60 @@ impl NoiseModel {
             model: UNoiseModel::Idling(Idling::new(decay_rate)),
         }
     }
+    /// Resolves this model's elementary Pauli-Lindblad generators for a Clifford circuit,
+    /// given as a rustiq-form gate list of (name, qubits) pairs.
+    ///
+    /// Returns (generators, circuit). Each generator is a (components, rate) pair whose
+    /// components ((gate_index, slot), pauli) place single-qubit Paulis (1=X, 2=Y, 3=Z) on
+    /// the output wire `slot` of the gate at `gate_index`; an index of -1 denotes the input
+    /// wire of qubit `slot`. Coordinates reference the *returned* gate list, which layered
+    /// models re-layer; feed it to the next model when chaining, as `Coverage` does.
+    #[allow(clippy::type_complexity)]
+    pub fn resolve_generators(
+        &self,
+        circuit: Vec<(String, Vec<usize>)>,
+        nqubits: usize,
+    ) -> (
+        Vec<(Vec<((i64, usize), u8)>, f64)>,
+        Vec<(String, Vec<usize>)>,
+    ) {
+        let mut circuit = CliffordCircuit::from_vec(circuit);
+        circuit.nqbits = nqubits;
+        let (generators, new_circuit) = self.model.get_generators(&circuit);
+        let mut out_generators: Vec<(Vec<((i64, usize), u8)>, f64)> = generators
+            .into_iter()
+            .map(|(pauli, rate)| {
+                let mut components: Vec<((i64, usize), u8)> = pauli
+                    .paulis
+                    .into_iter()
+                    .map(|(wire, p)| match wire {
+                        Wire::Input(q) => ((-1i64, q), p),
+                        Wire::GateWire(g, s) => ((g as i64, s), p),
+                    })
+                    .collect();
+                components.sort_unstable();
+                (components, rate)
+            })
+            .collect();
+        // HashMap-backed models emit generators in nondeterministic order; canonicalize so
+        // seeded Monte Carlo consumers are reproducible.
+        out_generators.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        let out_circuit = new_circuit
+            .gates
+            .iter()
+            .map(|gate| {
+                let name = match gate {
+                    CliffordGate::CNOT(_, _) => "CX",
+                    CliffordGate::CZ(_, _) => "CZ",
+                    CliffordGate::H(_) => "H",
+                    CliffordGate::S(_) => "S",
+                    CliffordGate::Sd(_) => "Sd",
+                    CliffordGate::SqrtX(_) => "SqrtX",
+                    CliffordGate::SqrtXd(_) => "SqrtXd",
+                };
+                (name.to_string(), _get_qbits(gate))
+            })
+            .collect();
+        (out_generators, out_circuit)
+    }
 }

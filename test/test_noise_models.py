@@ -21,8 +21,8 @@ from qiskit import QuantumCircuit
 from qiskit.quantum_info import Pauli, PauliLindbladMap
 from qiskit_ibm_runtime.fake_provider import FakeFez
 from qiskit_paulice._internal._internal_r import NoiseModel as _NoiseModel
+from qiskit_paulice._internal.conversion import convert_gate_wise_noise, convert_layered_noise
 from qiskit_paulice._internal.simulation import get_gamma
-from qiskit_paulice.checks import _convert_gate_wise_noise, _convert_layered_noise
 from qiskit_paulice.noise_models import NoiseModel
 
 
@@ -676,8 +676,8 @@ class TestUserFacingConvention(unittest.TestCase):
         nm_a = NoiseModel.from_pauli_lindblad_maps([plm_a])
         nm_b = NoiseModel.from_pauli_lindblad_maps([plm_b])
 
-        rust_a = _NoiseModel.layered(_convert_layered_noise(nm_a.gate_noise))
-        rust_b = _NoiseModel.layered(_convert_layered_noise(nm_b.gate_noise))
+        rust_a = _NoiseModel.layered(convert_layered_noise(nm_a.gate_noise))
+        rust_b = _NoiseModel.layered(convert_layered_noise(nm_b.gate_noise))
 
         qc = QuantumCircuit(2)
         qc.cz(0, 1)
@@ -696,8 +696,8 @@ class TestUserFacingConvention(unittest.TestCase):
         # "ZX" on edge (0, 1) -> Z on q0, X on q1 -> invisible to q0-only measurement.
         nm_zx = NoiseModel(gate_noise={(0, 1): [("ZX", 0.1)]})
 
-        rust_xz = _NoiseModel.gate_wise(_convert_gate_wise_noise(nm_xz.gate_noise))
-        rust_zx = _NoiseModel.gate_wise(_convert_gate_wise_noise(nm_zx.gate_noise))
+        rust_xz = _NoiseModel.gate_wise(convert_gate_wise_noise(nm_xz.gate_noise))
+        rust_zx = _NoiseModel.gate_wise(convert_gate_wise_noise(nm_zx.gate_noise))
 
         qc = QuantumCircuit(2)
         qc.cz(0, 1)
@@ -712,7 +712,7 @@ class TestUserFacingConvention(unittest.TestCase):
         matching PauliLindbladMap's sparse-form contract."""
         noise = NoiseModel(gate_noise={(0, 1): [(("X", "Z"), 0.1)]})
         with self.assertRaises(ValueError) as cm:
-            _convert_gate_wise_noise(noise.gate_noise)
+            convert_gate_wise_noise(noise.gate_noise)
         self.assertIn("2-character", str(cm.exception))
 
     def test_layered_non_canonical_edge_is_canonicalized(self):
@@ -723,8 +723,8 @@ class TestUserFacingConvention(unittest.TestCase):
         noise_canonical = NoiseModel(gate_noise={((0, 1),): [("IYX", 1e-3)]})
         noise_reversed = NoiseModel(gate_noise={((1, 0),): [("IYX", 1e-3)]})
 
-        rust_canonical = _NoiseModel.layered(_convert_layered_noise(noise_canonical.gate_noise))
-        rust_reversed = _NoiseModel.layered(_convert_layered_noise(noise_reversed.gate_noise))
+        rust_canonical = _NoiseModel.layered(convert_layered_noise(noise_canonical.gate_noise))
+        rust_reversed = _NoiseModel.layered(convert_layered_noise(noise_reversed.gate_noise))
 
         self.assertAlmostEqual(
             get_gamma(qc, measured_qubits="all", noise_models=[rust_canonical]),
@@ -732,12 +732,13 @@ class TestUserFacingConvention(unittest.TestCase):
             places=12,
         )
 
-    def test_layered_duplicate_edge_within_layer_raises(self):
-        """A layer key that lists the same edge twice (in either orientation) is rejected."""
-        noise = NoiseModel(gate_noise={((0, 1), (1, 0)): [("IYX", 1e-3)]})
-        with self.assertRaises(ValueError) as cm:
-            _convert_layered_noise(noise.gate_noise)
-        self.assertIn("twice", str(cm.exception))
+    def test_layered_non_matching_layer_raises(self):
+        """A layer key whose edges overlap (including duplicates) is rejected."""
+        for layer in (((0, 1), (1, 0)), ((0, 1), (1, 2))):
+            noise = NoiseModel(gate_noise={layer: [("IYX", 1e-3)]})
+            with self.assertRaises(ValueError) as cm:
+                convert_layered_noise(noise.gate_noise)
+            self.assertIn("matching", str(cm.exception))
 
     def test_from_backend_asymmetric_basis_mirrors_reverse_direction(self):
         """When ``from_backend`` is given an asymmetric ``pauli_bases``, the canonical

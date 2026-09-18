@@ -73,7 +73,10 @@ class NoiseModel:
     """Probability of bit-flip during measurement."""
 
     idling_noise: float | None = None
-    """Qubit decay rate during idle time. Total error probability is given as ``1 - exp(-t / idling_noise)``."""
+    """Qubit decay rate during idle time. Total error probability is given as ``1 - exp(-t / idling_noise)``.
+
+    Not currently supported: both :func:`~qiskit_paulice.checks.add_pauli_checks` and
+    :meth:`~qiskit_paulice.CheckedCircuit.estimate_fault_rates` raise if this is set."""
 
     @classmethod
     def from_backend(

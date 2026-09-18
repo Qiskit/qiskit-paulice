@@ -12,6 +12,9 @@
 
 import numpy as np
 from qiskit import QuantumCircuit
+from qiskit.quantum_info import Pauli
+
+from ._internal_r import NoiseModel as RustNoiseModel
 
 _NAMES_CONVERSION = {
     "cx": "CX",
@@ -120,3 +123,89 @@ def convert_to_qiskit_circuit(circuit, nqbits):
         else:
             raise ValueError(f"Unknown rustiq gate {gate}")
     return qs_circuit
+
+
+def convert_noise_model(noise_model, circuit: QuantumCircuit) -> RustNoiseModel | None:
+    """Validate a :class:`~qiskit_paulice.NoiseModel` and convert its gate noise to Rust.
+
+    Returns the Rust gate-noise model, or ``None`` when the model carries no gate noise (an
+    empty gate-noise dict counts as none). Readout noise is left to the caller.
+
+    Raises:
+        ValueError: Idling noise is set (the Rust idling model is not trusted); the model is
+            empty; ``readout_noise`` lies outside ``[0, 0.5)``; the gate noise is not a
+            recognized specification; or layered noise is paired with a circuit containing
+            CX gates, which the Rust layering pass cannot handle.
+    """
+    if noise_model.idling_noise is not None:
+        raise ValueError("Idling noise is not supported.")
+    readout = noise_model.readout_noise
+    if readout is not None and not 0 <= readout < 0.5:
+        raise ValueError("readout_noise must lie in [0, 0.5).")
+    gate_noise = noise_model.gate_noise
+    first_key = next(iter(gate_noise), None) if isinstance(gate_noise, dict) else None
+    if gate_noise is None or gate_noise == {}:
+        model = None
+    elif isinstance(gate_noise, float):
+        model = RustNoiseModel.uniform_depolarizing(gate_noise)
+    elif isinstance(first_key, tuple) and first_key and isinstance(first_key[0], tuple):
+        if any(inst.operation.name == "cx" for inst in circuit.data):
+            raise ValueError(
+                "Layered gate noise requires a CZ-based circuit (the Rust layering pass "
+                "does not support CX gates); transpile CX to CZ first."
+            )
+        model = RustNoiseModel.layered(convert_layered_noise(gate_noise))
+    elif isinstance(first_key, tuple) and len(first_key) == 2 and isinstance(first_key[0], int):
+        model = RustNoiseModel.gate_wise(convert_gate_wise_noise(gate_noise))
+    else:
+        raise ValueError(f"Unrecognized gate noise specification: {gate_noise!r}")
+    if model is None and readout is None:
+        raise ValueError("The noise model may not be empty.")
+    return model
+
+
+def convert_layered_noise(noise):
+    """Canonicalize a :data:`~qiskit_paulice.noise_models.LayeredGateNoise` for Rust."""
+    new_noise = {}
+    for layer in noise:
+        # The Rust layering pass always uses canonical ``(min, max)`` edge tuples internally,
+        # so non-canonical user layer keys (e.g. ``((1, 0),)``) would otherwise silently
+        # fail to match. Canonicalize each edge and re-sort the layer's edges here.
+        canonical_layer = tuple(sorted((min(e), max(e)) for e in layer))
+        # A layer's edges fire simultaneously, so they must be pairwise disjoint (a
+        # matching); overlapping edges (including duplicates like ``((a, b), (b, a))``)
+        # cannot be layered and would panic the Rust layering pass.
+        qubits = [q for edge in canonical_layer for q in edge]
+        if len(set(qubits)) != len(qubits):
+            raise ValueError(
+                f"Layer {layer!r} is not a matching: its edges must be pairwise disjoint."
+            )
+        converted_noise = []
+        for p, r in noise[layer]:
+            p_str = p.to_label() if isinstance(p, Pauli) else p
+            # User-facing strings follow Qiskit convention (rightmost char = qubit 0);
+            # the Rust consumer indexes left-to-right (leftmost char = qubit 0).
+            converted_noise.append((p_str[::-1], r))
+        new_noise[canonical_layer] = converted_noise
+    return new_noise
+
+
+def convert_gate_wise_noise(noise):
+    """Encode a :data:`~qiskit_paulice.noise_models.GateWiseNoise` in Rust's integer form."""
+    pauli_map = {"I": 0, "X": 1, "Y": 2, "Z": 3}
+    new_noise = {}
+    for edge in noise:
+        converted_noise = []
+        for p_str, r in noise[edge]:
+            if not isinstance(p_str, str) or len(p_str) != 2:
+                raise ValueError(
+                    "Each gate-wise generator must be a 2-character Pauli string paired "
+                    "left-to-right with the edge tuple (e.g. 'XZ' on edge (a, b) = X on a, "
+                    "Z on b)."
+                )
+            # ``p_str[0]`` on edge[0], ``p_str[1]`` on edge[1] -- same convention as
+            # PauliLindbladMap's sparse ``(pauli_str, indices)`` form.
+            p_tuple = (pauli_map[p_str[0]], pauli_map[p_str[1]])
+            converted_noise.append((p_tuple, r))
+        new_noise[edge] = converted_noise
+    return new_noise

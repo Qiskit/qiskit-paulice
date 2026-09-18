@@ -1,0 +1,21 @@
+---
+features:
+  - |
+    Added the new :meth:`qiskit_paulice.CheckedCircuit.estimate_fault_rates` method: one
+    Monte Carlo fault simulation of a checked Clifford circuit under a
+    :class:`qiskit_paulice.NoiseModel`, returning a :class:`qiskit_paulice.FaultRates` with
+    the acceptance rate, the accepted-but-harmless fault rate (the correction term in the
+    doped-fidelity certificate of `arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`__,
+    Sec. S2 -- subtracting it from the measured fidelity of the undoped checked circuit
+    lower bounds the fidelity of the doped circuit), the post-selected logical error
+    rate, and per-check syndrome trigger rates for validating a noise model against
+    measured syndrome data. All rates carry standard errors. Fault generators are resolved
+    by the same Rust noise models the check picker uses, covering uniform, gate-wise, and
+    layered gate noise, with readout errors handled classically.
+fixes:
+  - |
+    A :data:`~qiskit_paulice.noise_models.LayeredGateNoise` layer whose edges share a qubit
+    is now rejected with a ``ValueError`` by :func:`qiskit_paulice.checks.add_pauli_checks`
+    and :meth:`qiskit_paulice.CheckedCircuit.estimate_fault_rates`, instead of crashing in
+    the Rust layering pass. A layer's edges are applied simultaneously, so they must form a
+    matching.
