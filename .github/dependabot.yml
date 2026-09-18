@@ -1,18 +1,37 @@
+# Keep dependency-update PRs rare and batched: one grouped PR per ecosystem per month,
+# and never for patch releases. Floors (``>=``) are only raised when a new release
+# falls outside them (``increase-if-necessary``); exact pins on the lint tools move on
+# minor/major releases only.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     labels: ["dependencies"]
     schedule:
-      interval: "weekly"
+      interval: "monthly"
+    groups:
+      github-actions:
+        patterns: ["*"]
   - package-ecosystem: "pip"
     directory: "/"
     labels: ["dependencies"]
-    versioning-strategy: increase
+    versioning-strategy: increase-if-necessary
     schedule:
       interval: "monthly"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-patch"]
+    groups:
+      python:
+        patterns: ["*"]
   - package-ecosystem: "cargo"
     directory: "/"
     labels: ["dependencies"]
     schedule:
       interval: "monthly"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-patch"]
+    groups:
+      rust:
+        patterns: ["*"]
