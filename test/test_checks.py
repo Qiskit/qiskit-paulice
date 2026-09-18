@@ -564,6 +564,11 @@ class TestAddPauliChecksErrorPaths(unittest.TestCase):
         result = add_pauli_checks(_clifford(), [0], noise, seed=0)
         _assert_variant_progression(self, result, expected_targets=[0])
 
+    def test_gate_noise_only(self):
+        noise = NoiseModel(gate_noise=1e-3)
+        result = add_pauli_checks(_clifford(), [0], noise, seed=0)
+        _assert_variant_progression(self, result, expected_targets=[0])
+
     def test_seed_none_smoke(self):
         # The ``seed is None`` branch isn't covered by tests that always pass a seed.
         result = add_pauli_checks(_clifford(), [0], _DEFAULT_NOISE)

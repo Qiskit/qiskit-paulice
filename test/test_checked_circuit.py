@@ -605,6 +605,49 @@ class TestEstimateFaultRates(unittest.TestCase):
         non_clifford.compose(checked.circuit, inplace=True)
         with self.assertRaises(ValueError):
             replace(checked, circuit=non_clifford).estimate_fault_rates(NoiseModel(gate_noise=1e-3))
+        mid_measure = checked.circuit.copy()
+        mid_measure.x(checked.target_qubits[0])  # after the terminal measurements
+        with self.assertRaisesRegex(ValueError, "after its measurement"):
+            replace(checked, circuit=mid_measure).estimate_fault_rates(NoiseModel(gate_noise=1e-3))
+        with self.assertRaisesRegex(ValueError, "non-finite"):
+            checked.estimate_fault_rates(NoiseModel(gate_noise=3.0))  # infinite Lindblad rate
+
+    def test_no_accepted_shot_raises(self):
+        """A sample with every shot rejected raises instead of dividing by zero."""
+        checked = self._checked()
+        noise = NoiseModel(gate_noise=2.9, readout_noise=0.49)
+        with self.assertRaisesRegex(ValueError, "was accepted"):
+            for seed in range(60):  # each single shot is rejected with probability ~1/2
+                checked.estimate_fault_rates(noise, shots=1, seed=seed)
+
+    def test_barriers_transparent(self):
+        """Barriers in the checked circuit do not change the estimate."""
+        checked = self._checked()
+        with_barrier = checked.circuit.copy_empty_like()
+        with_barrier.barrier()
+        with_barrier.compose(checked.circuit, inplace=True)
+        noise = NoiseModel(gate_noise=1e-3, readout_noise=1e-2)
+        self.assertEqual(
+            replace(checked, circuit=with_barrier).estimate_fault_rates(noise, shots=2000, seed=1),
+            checked.estimate_fault_rates(noise, shots=2000, seed=1),
+        )
+
+
+class TestFaultChannels(unittest.TestCase):
+    """Direct tests of the fault-channel sweep against the Rust generator convention."""
+
+    def test_input_wire_generators(self):
+        """Generators on input wires (index -1) propagate through the whole circuit."""
+        circuit = QuantumCircuit(3)
+        circuit.h(0)
+        circuit.cz(0, 1)  # qubit 2 has no gates, so its "last wire" is its input wire
+        readout = 0.1
+        rates, x_img, z_img, _ = _fault_channels(circuit, _RustNoiseModel.readout(readout))
+        np.testing.assert_allclose(rates, -np.log(1 - 2 * readout) / 2)
+        # One X per qubit, each on a different qubit, and no Z anywhere.
+        self.assertEqual(x_img.sum(), 3)
+        self.assertTrue((x_img.sum(axis=0) == 1).all())
+        self.assertFalse(z_img.any())
 
 
 class TestCoverageConsistency(unittest.TestCase):
