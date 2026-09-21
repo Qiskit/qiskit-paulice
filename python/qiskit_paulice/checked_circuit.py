@@ -69,10 +69,11 @@ class FaultRates(NamedTuple):
     r"""Monte Carlo fault-rate estimates for a checked circuit, from one common sample set.
 
     Attributes:
-        harmless_rate: Fraction of shots resulting in an error that backpropagates to a
-            diagonal Pauli on the circuit input, applying a global phase to :math:`|0^n\rangle`.
+        harmless_rate: Fraction of accepted shots whose error is non-identity yet
+            backpropagates to a diagonal Pauli on the circuit input, applying a global phase
+            to :math:`|0^n\rangle`.
         harmless_stderr: Standard error of ``harmless_rate``.
-        logical_error_rate: Fraction of shots resulting in an error that flips one or more
+        logical_error_rate: Fraction of accepted shots whose error flips one or more
             payload measurement outcomes.
         logical_error_stderr: Standard error of ``logical_error_rate``.
         acceptance_rate: Probability of a zero syndrome on every check.
@@ -211,22 +212,17 @@ class CheckedCircuit:
         r"""Estimate acceptance, harmless-fault, logical-error, and check trigger rates.
 
         One noisy Monte Carlo sampling under ``noise_model`` yields all rates. A shot is
-        *accepted* if it flips no check syndrome. It is *harmless* if it is non-identity yet
-        backpropagates to a diagonal Pauli on the input, acting as a global phase on
-        :math:`|0^n\rangle`. Doping converts at worst every harmless fault into a harmful
-        one (`arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`_, Sec. S2), so
-
-        .. math:: F_{\text{doped}} \;\geq\; F_{\text{Clifford}} - \Pr(H \mid A),
-
-        with :math:`F_{\text{Clifford}}` the measured post-selected fidelity of this
-        (undoped) circuit. The logical error rate is the residual error surviving
-        post-selection. Comparing the predicted check trigger rates against measured syndrome
-        data is a useful way to gain insight into noise model agreement with the true noise.
+        *accepted* if all check syndromes are :math:`0`. An error is *harmless* if it is
+        non-identity yet backpropagates to a diagonal Pauli on the input, acting as a
+        global phase on :math:`|0^n\rangle`. The *harmless rate* and *logical error rate*
+        are the fractions of accepted shots whose error is harmless, or flips a payload
+        measurement outcome; the *check trigger rate* is the fraction of all shots a given
+        check flags with a non-zero syndrome.
 
         Args:
             noise_model: Noise to apply during Monte Carlo sampling.
-            shots: Number of noisy samples configurations to draw.
-            seed: Seed for the fault sampling.
+            shots: Number of fault configurations to sample.
+            seed: Seed or generator for the fault sampling.
 
         Returns:
             The estimated fault rates with their standard errors.
@@ -478,22 +474,16 @@ _RUSTIQ_GATES = {
 def _fault_channels(
     circuit: QuantumCircuit, model: _RustNoiseModel | None
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, Clifford]:
-    """Lindblad rates and output-frame images of every elementary fault channel.
-
-    Generator resolution -- noise placement, layer matching, and rate inference for
-    uncharacterized edges -- is delegated to the Rust noise ``model``, the same code the
-    check picker consumes, on the (possibly re-layered) circuit it returns. One backward
-    sweep conjugates the generators to the circuit output: destabilizer row ``q`` of the
-    suffix tableau is the image of ``X_q``, stabilizer row ``q`` that of ``Z_q``, and a
-    generator's image is the XOR over its single-qubit components.
+    """Specify every noise generator in the model with its end-of-circuit Pauli in symplectic form.
 
     Returns:
-        ``(rates, x, z, full_clifford)``: per channel the Lindblad rate (flip probability
-        ``(1 - exp(-2 rate))/2``) and the symplectic rows of its output image, plus the
-        whole circuit's Clifford.
+        ``(rates, x, z, full_clifford)``: for each generator its rate (it fires with
+        probability ``(1 - exp(-2 rate))/2``) and the x and z bits of its image, plus the
+        whole circuit's Clifford for pushing images back to the input.
 
     Raises:
-        ValueError: on a non-Clifford instruction or a non-terminal measurement.
+        ValueError: on a non-Clifford instruction, a non-terminal measurement, or a rate
+            that is negative or not finite.
     """
     touched: set[int] = set()
     for inst in reversed(circuit.data):

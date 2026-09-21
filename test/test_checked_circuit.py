@@ -392,7 +392,7 @@ class TestEstimateFaultRates(unittest.TestCase):
     def test_matches_exact_enumeration(self):
         """The estimate agrees with exact enumeration over every fault configuration.
 
-        The oracle classifies each elementary fault with explicit prefix/suffix subcircuits
+        The oracle classifies each generator with explicit prefix/suffix subcircuits
         and ``Pauli.evolve`` -- deliberately different from the method's tableau sweep -- and
         sums exact probabilities over all fault subsets.
         """
@@ -414,7 +414,7 @@ class TestEstimateFaultRates(unittest.TestCase):
             gate_noise={e: rates.get(e, [("XI", 0.0)]) for e in edges}, readout_noise=None
         )
 
-        # Oracle: per elementary channel, its flip probability, syndrome flips, and
+        # Oracle: per generator, its flip probability, syndrome flips, and
         # back-propagated symplectic rows.
         num_qubits = circuit.num_qubits
         syndrome_ops = []
