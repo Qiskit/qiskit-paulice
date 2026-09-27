@@ -10,6 +10,8 @@
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 
+from numbers import Real
+
 import numpy as np
 from qiskit import QuantumCircuit
 from qiskit.quantum_info import Pauli
@@ -128,14 +130,21 @@ def convert_to_qiskit_circuit(circuit, nqbits):
 def convert_noise_model(noise_model, circuit: QuantumCircuit) -> RustNoiseModel | None:
     """Validate a :class:`~qiskit_paulice.NoiseModel` and convert its gate noise to Rust.
 
-    Returns the Rust gate-noise model, or ``None`` when the model carries no gate noise (an
-    empty gate-noise dict counts as none). Readout noise is left to the caller.
+    Args:
+        noise_model: The noise model to validate and convert.
+        circuit: The circuit the noise model will be applied to; layered gate noise requires
+            it to contain no ``cx`` gates.
+
+    Returns:
+        The Rust noise model for the gate noise, or ``None`` when there is no gate noise (an
+        empty gate-noise dict counts as none). Readout noise is validated but not converted.
 
     Raises:
-        ValueError: Idling noise is set (the Rust idling model is not trusted); the model is
-            empty; ``readout_noise`` lies outside ``[0, 0.5)``; the gate noise is not a
-            recognized specification; or layered noise is paired with a circuit containing
-            CX gates, which the Rust layering pass cannot handle.
+        ValueError: Idling noise is set; the model has neither gate nor readout noise;
+            ``readout_noise`` lies outside ``[0, 0.5)``; uniform gate noise lies outside
+            ``[0, 3)``; the gate noise is not a number, a layered or a gate-wise
+            specification; or layered gate noise is paired with a circuit containing ``cx``
+            gates.
     """
     if noise_model.idling_noise is not None:
         raise ValueError("Idling noise is not supported.")
@@ -146,8 +155,11 @@ def convert_noise_model(noise_model, circuit: QuantumCircuit) -> RustNoiseModel 
     first_key = next(iter(gate_noise), None) if isinstance(gate_noise, dict) else None
     if gate_noise is None or gate_noise == {}:
         model = None
-    elif isinstance(gate_noise, float):
-        model = RustNoiseModel.uniform_depolarizing(gate_noise)
+    elif isinstance(gate_noise, Real) and not isinstance(gate_noise, bool):
+        # The Rust rate -ln(1 - p/3)/4 is finite and non-negative only for p in [0, 3).
+        if not 0 <= gate_noise < 3:
+            raise ValueError(f"Uniform gate_noise must lie in [0, 3), not {gate_noise!r}.")
+        model = RustNoiseModel.uniform_depolarizing(float(gate_noise))
     elif isinstance(first_key, tuple) and first_key and isinstance(first_key[0], tuple):
         if any(inst.operation.name == "cx" for inst in circuit.data):
             raise ValueError(
@@ -165,7 +177,20 @@ def convert_noise_model(noise_model, circuit: QuantumCircuit) -> RustNoiseModel 
 
 
 def convert_layered_noise(noise):
-    """Canonicalize a :data:`~qiskit_paulice.noise_models.LayeredGateNoise` for Rust."""
+    """Convert layered gate noise to the form the Rust layered noise model expects.
+
+    Args:
+        noise: A :data:`~qiskit_paulice.noise_models.LayeredGateNoise` mapping each layer (a
+            tuple of qubit-pair edges) to ``(pauli, rate)`` pairs, where ``pauli`` is a
+            :class:`~qiskit.quantum_info.Pauli` or a label with qubit 0 rightmost.
+
+    Returns:
+        The same mapping with each edge written ``(min, max)``, each layer's edges sorted,
+        and each Pauli given as a label with qubit 0 leftmost.
+
+    Raises:
+        ValueError: The edges of a layer share a qubit.
+    """
     new_noise = {}
     for layer in noise:
         # The Rust layering pass always uses canonical ``(min, max)`` edge tuples internally,
@@ -191,13 +216,25 @@ def convert_layered_noise(noise):
 
 
 def convert_gate_wise_noise(noise):
-    """Encode a :data:`~qiskit_paulice.noise_models.GateWiseNoise` in Rust's integer form."""
+    """Convert gate-wise noise to the integer form the Rust gate-wise noise model expects.
+
+    Args:
+        noise: A :data:`~qiskit_paulice.noise_models.GateWiseNoise` mapping each edge
+            ``(a, b)`` to ``(pauli, rate)`` pairs, where ``pauli`` is a 2-character label whose
+            first character acts on ``a`` and second on ``b``.
+
+    Returns:
+        The same mapping with each label replaced by a pair of integers, 0=I, 1=X, 2=Y, 3=Z.
+
+    Raises:
+        ValueError: A Pauli is not a 2-character string of ``I``, ``X``, ``Y`` and ``Z``.
+    """
     pauli_map = {"I": 0, "X": 1, "Y": 2, "Z": 3}
     new_noise = {}
     for edge in noise:
         converted_noise = []
         for p_str, r in noise[edge]:
-            if not isinstance(p_str, str) or len(p_str) != 2:
+            if not isinstance(p_str, str) or len(p_str) != 2 or not set(p_str) <= set(pauli_map):
                 raise ValueError(
                     "Each gate-wise generator must be a 2-character Pauli string paired "
                     "left-to-right with the edge tuple (e.g. 'XZ' on edge (a, b) = X on a, "

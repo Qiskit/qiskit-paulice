@@ -41,9 +41,10 @@ fn _get_qbits(gate: &CliffordGate) -> Vec<usize> {
     }
 }
 
-/// A noise model that applies uniform depolarizing noise after each 2-qubit gate, independently on each qubit.
-/// The depolarizing probability is specified by the parameter `depol_p`.
-/// The corresponding error probability of each individual Pauli error (X, Y, or Z) is `depol_p / 3`.
+/// A noise model that applies the same depolarizing channel after every 2-qubit gate.
+/// `new` takes an average gate infidelity and stores 5/4 of it as `depol_p`, the equivalent
+/// depolarizing probability. Each of the 15 non-identity 2-qubit Paulis is a generator with the
+/// same rate, so every Pauli error is equally likely.
 #[derive(Clone, Debug)]
 pub struct UniformDepolarizing {
     depol_p: f64,

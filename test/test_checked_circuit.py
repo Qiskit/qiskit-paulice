@@ -109,6 +109,21 @@ def _checked_example(nq=4, depth=4, seed=1):
 class TestCheckedCircuit(unittest.TestCase):
     """Tests covering :class:`CheckedCircuit`."""
 
+    def test_non_terminal_measurement_rejected(self):
+        """Construction rejects anything but barriers after a qubit's measurement."""
+        barrier_after = QuantumCircuit(2, 2)
+        barrier_after.h(0)
+        barrier_after.measure([0, 1], [0, 1])
+        barrier_after.barrier()
+        CheckedCircuit(barrier_after)
+        gate_after = barrier_after.copy()
+        gate_after.x(1)
+        measured_twice = barrier_after.copy()
+        measured_twice.measure(0, 1)
+        for circuit in (gate_after, measured_twice):
+            with self.subTest(circuit=circuit), self.assertRaisesRegex(ValueError, "after its"):
+                CheckedCircuit(circuit)
+
     def test_post_init_coerces_sequences(self):
         """List inputs to tuple-typed fields are coerced (and nested lists too)."""
         cc = CheckedCircuit(
@@ -605,12 +620,10 @@ class TestEstimateFaultRates(unittest.TestCase):
         non_clifford.compose(checked.circuit, inplace=True)
         with self.assertRaises(ValueError):
             replace(checked, circuit=non_clifford).estimate_fault_rates(NoiseModel(gate_noise=1e-3))
-        mid_measure = checked.circuit.copy()
-        mid_measure.x(checked.target_qubits[0])  # after the terminal measurements
-        with self.assertRaisesRegex(ValueError, "after its measurement"):
-            replace(checked, circuit=mid_measure).estimate_fault_rates(NoiseModel(gate_noise=1e-3))
-        with self.assertRaisesRegex(ValueError, "non-finite"):
-            checked.estimate_fault_rates(NoiseModel(gate_noise=3.0))  # infinite Lindblad rate
+        with self.assertRaisesRegex(ValueError, "Uniform gate_noise"):
+            checked.estimate_fault_rates(NoiseModel(gate_noise=3.0))
+        with self.assertRaisesRegex(ValueError, "non-finite or negative"):
+            checked.estimate_fault_rates(NoiseModel(gate_noise={(0, 1): [("XX", -1e-3)]}))
 
     def test_no_accepted_shot_raises(self):
         """A sample with every shot rejected raises instead of dividing by zero."""

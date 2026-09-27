@@ -81,6 +81,7 @@ autosummary_generate = True
 autosummary_generate_overwrite = False
 autoclass_content = "both"
 autodoc_typehints = "description"
+autodoc_typehints_description_target = "documented_params"
 autodoc_default_options = {
     "inherited-members": None,
     "show-inheritance": True,
@@ -92,10 +93,10 @@ autodoc_mock_imports = ["qiskit_paulice._internal_r"]
 # `from __future__ import annotations` in the source module so that the
 # annotation is a string at autodoc time.
 autodoc_type_aliases = {
-    "UniformGateNoise": "UniformGateNoise",
-    "LayeredGateNoise": "LayeredGateNoise",
-    "GateWiseNoise": "GateWiseNoise",
-    "GateNoise": "GateNoise",
+    "UniformGateNoise": "qiskit_paulice.noise_models.UniformGateNoise",
+    "LayeredGateNoise": "qiskit_paulice.noise_models.LayeredGateNoise",
+    "GateWiseNoise": "qiskit_paulice.noise_models.GateWiseNoise",
+    "GateNoise": "qiskit_paulice.noise_models.GateNoise",
 }
 napoleon_google_docstring = True
 napoleon_numpy_docstring = False
@@ -118,6 +119,7 @@ intersphinx_mapping = {
     "numpy": ("https://numpy.org/doc/stable/", None),
     "qiskit": ("https://quantum.cloud.ibm.com/docs/api/qiskit/", None),
     "rustworkx": ("https://www.rustworkx.org/", None),
+    "samplomatic": ("https://qiskit.github.io/samplomatic/", None),
 }
 
 plot_working_directory = "."
