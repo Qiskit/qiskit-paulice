@@ -22,6 +22,32 @@ from ._internal_r import PyMetric as Metric
 from .conversion import convert_to_rustiq_circuit
 
 
+def validate_terminal_measurements(circuit: QuantumCircuit) -> None:
+    """Check that every measurement in ``circuit`` is the last instruction on its qubit.
+
+    Barriers may follow a measurement. Any other instruction on a measured qubit after its
+    measurement, including a second measurement, is rejected.
+
+    Args:
+        circuit: The circuit to check.
+
+    Raises:
+        ValueError: A qubit has an instruction other than a barrier after its measurement.
+    """
+    measured: set[int] = set()
+    for inst in circuit.data:
+        if inst.operation.name == "barrier":
+            continue
+        for qubit in (circuit.find_bit(q).index for q in inst.qubits):
+            if qubit in measured:
+                raise ValueError(
+                    f"Qubit {qubit} has an instruction after its measurement; only one "
+                    "terminal measurement per qubit is supported."
+                )
+            if inst.operation.name == "measure":
+                measured.add(qubit)
+
+
 def build_check_picker(
     circuit: QuantumCircuit,
     metric: Metric,

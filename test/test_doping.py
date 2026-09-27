@@ -23,11 +23,13 @@ from qiskit.exceptions import QiskitError
 from qiskit.quantum_info import (
     Clifford,
     Pauli,
+    PauliList,
     SparsePauliOp,
     Statevector,
     random_clifford,
 )
 from qiskit_paulice import CheckedCircuit, DopedCircuit, Wire
+from qiskit_paulice._internal.doping import _prune
 from qiskit_paulice.checks import add_pauli_checks
 from qiskit_paulice.noise_models import NoiseModel
 
@@ -124,6 +126,36 @@ def _dope(circuit: QuantumCircuit, *args, **kwargs) -> tuple[QuantumCircuit, lis
     return doped.circuit, list(doped.doped_wires)
 
 
+def _gates_on(circuit: QuantumCircuit, qubit: int) -> list[int]:
+    """Indices into ``circuit.data`` of the gates (not barriers or measurements) on ``qubit``."""
+    return [
+        index
+        for index, inst in enumerate(circuit.data)
+        if inst.operation.name not in ("barrier", "measure")
+        and qubit in [circuit.find_bit(q).index for q in inst.qubits]
+    ]
+
+
+def _rotation_wires(doped: QuantumCircuit) -> list[Wire]:
+    """The wire of each ``rz`` in a doped circuit, read off the gate order.
+
+    Each ``rz`` is labelled by the last other gate on its qubit before it, indexed as in the
+    circuit with every ``rz`` removed. Assumes the undoped circuit has no ``rz`` gates.
+    """
+    wires = []
+    last_gate: dict[int, int] = {}
+    original_index = 0
+    for inst in doped.data:
+        qubits = [doped.find_bit(q).index for q in inst.qubits]
+        if inst.operation.name == "rz":
+            wires.append(Wire(qubits[0], last_gate.get(qubits[0])))
+            continue
+        if inst.operation.name not in ("barrier", "measure"):
+            last_gate.update(dict.fromkeys(qubits, original_index))
+        original_index += 1
+    return wires
+
+
 class TestDopeCliffordCircuit(unittest.TestCase):
     """Tests for :meth:`CheckedCircuit.dope`."""
 
@@ -209,7 +241,7 @@ class TestDopeCliffordCircuit(unittest.TestCase):
             _dope(circuit, num_sites=-1)
 
     def test_draw_may_exhaust_pool(self):
-        """A subset of a fixed point can prune to fewer sites than requested, which raises."""
+        """A subset of an irreducible set can prune to fewer sites than requested, which raises."""
         circuit = random_clifford(2, seed=116).to_circuit()  # six valid sites
         with self.assertRaisesRegex(ValueError, "Could only draw"):
             for seed in range(100):  # some seeds draw three sites that prune to two
@@ -262,6 +294,48 @@ class TestDopeCliffordCircuit(unittest.TestCase):
         circuit.x(0)
         with self.assertRaises(ValueError):
             _dope(circuit)
+
+
+class TestPrune(unittest.TestCase):
+    """Tests for each pruning rule, on hand-picked output Paulis."""
+
+    def _survivors(
+        self, labels: list[str], input_diagonal: set[int], active: list[bool] | None = None
+    ) -> list[int]:
+        """Prune candidates with the given output Paulis; input diagonality is given directly."""
+        paulis = PauliList(labels)
+        mask = np.ones(len(labels), dtype=bool) if active is None else np.array(active)
+        _prune(
+            paulis,
+            np.array([i in input_diagonal for i in range(len(labels))]),
+            ~paulis.x.any(axis=1),
+            mask,
+        )
+        return [int(i) for i in np.flatnonzero(mask)]
+
+    def test_input_rule(self):
+        """An input-diagonal rotation drops unless an earlier one anticommutes with it."""
+        self.assertEqual(self._survivors(["X"], {0}), [])
+        self.assertEqual(self._survivors(["X", "Y"], {0}), [1])
+        self.assertEqual(self._survivors(["Y", "X"], {1}), [0, 1])
+
+    def test_output_rule(self):
+        """An output-diagonal rotation drops unless a later one anticommutes with it."""
+        self.assertEqual(self._survivors(["X", "Z"], set()), [0])
+        self.assertEqual(self._survivors(["Z", "X"], set()), [0, 1])
+
+    def test_merge_rule(self):
+        """Equal Paulis merge into the earliest unless an anticommuting one lies between."""
+        self.assertEqual(self._survivors(["X", "X"], set()), [0])
+        self.assertEqual(self._survivors(["X", "-X"], set()), [0])
+        self.assertEqual(self._survivors(["XI", "IX", "XI"], set()), [0, 1])
+        self.assertEqual(self._survivors(["X", "Y", "X"], set()), [0, 1, 2])
+        self.assertEqual(self._survivors(["X", "Y", "X", "X"], set()), [0, 1, 2])
+
+    def test_inactive_candidates_ignored(self):
+        """Inactive candidates neither block a rule nor come back."""
+        self.assertEqual(self._survivors(["X", "Y", "X"], set(), [True, False, True]), [0])
+        self.assertEqual(self._survivors(["Y", "X"], {1}, [False, True]), [])
 
 
 class TestCheckedCircuitDoping(unittest.TestCase):
@@ -344,15 +418,54 @@ class TestHardwareStyle(unittest.TestCase):
     def test_entangling_wires(self):
         """Sites are restricted to wires directly after, or directly before, an entangling gate."""
         circuit = _paper_ansatz(5, seed=1)
-        for wires, offset in (("after_entangling", -1), ("before_entangling", 0)):
+        circuit.barrier()
+        circuit.cz(0, 1)
+        for wires in ("after_entangling", "before_entangling"):
             with self.subTest(wires=wires):
                 doped, sites = _dope(circuit, wires=wires)
                 self.assertGreater(len(sites), 0)
                 self.assertEqual(doped.count_ops()["rz"], len(sites))
                 for site in sites:
-                    inst = circuit.data[_position(site) + offset]
-                    self.assertGreater(inst.operation.num_qubits, 1)
-                    self.assertIn(site.qubit, [circuit.find_bit(q).index for q in inst.qubits])
+                    gates = _gates_on(circuit, site.qubit)
+                    if wires == "after_entangling":
+                        entangling = site.after_instruction
+                    elif site.after_instruction is None:
+                        entangling = gates[0]
+                    else:
+                        entangling = gates[gates.index(site.after_instruction) + 1]
+                    self.assertGreater(circuit.data[entangling].operation.num_qubits, 1)
+
+    def test_wire_labels(self):
+        """Each doped wire names the last gate on its qubit before the rotation."""
+        circuit = QuantumCircuit(3)
+        circuit.h(0)
+        circuit.h(1)
+        circuit.x(2)
+        circuit.barrier()
+        circuit.cz(0, 1)
+        circuit.h(0)
+        circuit.h(1)
+        doped, sites = _dope(circuit, wires="before_entangling")
+        self.assertEqual(sites, [Wire(0, 0), Wire(1, 1)])
+        self.assertEqual(_rotation_wires(doped), sites)
+
+    def test_wires_match_rotations(self):
+        """For every rule, the returned wires are exactly where the rotations were placed."""
+        circuits = [random_clifford(4, seed=seed).to_circuit() for seed in range(3)]
+        layered = _paper_ansatz(4, seed=2)
+        layered.barrier()
+        layered.cz(1, 2)
+        layered.measure_all()
+        circuits.append(layered)
+        for index, circuit in enumerate(circuits):
+            for wires in ("all", "after_entangling", "before_entangling"):
+                with self.subTest(circuit=index, wires=wires):
+                    doped, sites = _dope(circuit, wires=wires)
+                    self.assertGreater(len(sites), 0)
+                    self.assertEqual(_rotation_wires(doped), sites)
+                    for site in sites:
+                        if site.after_instruction is not None:
+                            self.assertIn(site.after_instruction, _gates_on(circuit, site.qubit))
 
     def test_invalid_wires(self):
         """An unknown ``wires`` value is rejected."""

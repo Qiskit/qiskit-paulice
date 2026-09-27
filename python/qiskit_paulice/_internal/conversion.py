@@ -10,6 +10,8 @@
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 
+from numbers import Real
+
 import numpy as np
 from qiskit import QuantumCircuit
 from qiskit.quantum_info import Pauli
@@ -33,27 +35,26 @@ _NAMES_CONVERSION = {
 
 
 def convert_to_rustiq_circuit(circuit):
-    """Convert a qiskit circuit to rustiq's gate list, plus a qiskit-index map.
+    """Convert a Clifford Qiskit circuit to rustiq's gate list, plus a Qiskit-index map.
 
-    The second returned list ``qiskit_inst_indices`` runs parallel to
-    ``rustiq_circuit``: ``qiskit_inst_indices[i]`` is the index into
-    ``circuit.data`` of the qiskit ``CircuitInstruction`` that emitted the
-    i-th rustiq gate. Some qiskit instructions emit zero rustiq gates (e.g.
-    ``measure``, ``barrier``, ``id``, ``rz(0)``); some emit two (``x``, ``z``,
-    ``rz(pi)``). This lets callers translate rustiq-side wire references back
-    to positions in the original qiskit circuit.
+    Measurements and barriers are skipped. ``x`` and ``z`` become two ``SqrtX`` or two ``S``
+    gates, and ``rz``/``u1`` rotations by a multiple of pi/2 become zero, one or two ``S``/``Sd``
+    gates (equal up to a global phase); ``id`` and rotations by a multiple of 2 pi emit nothing.
 
-    Measurements and barriers are ignored as they are not part of the Clifford
-    circuit logic.
+    Args:
+        circuit: The circuit, built from ``cx``, ``cz``, ``h``, ``s``, ``sdg``, ``sx``,
+            ``sxdg``, ``x``, ``z``, ``rz``, ``u1``, ``id``, ``measure`` and ``barrier``.
+
+    Returns:
+        ``(rustiq_circuit, qiskit_inst_indices)``: the list of ``(gate_name, qubit_indices)``
+        pairs, and a parallel list whose ``i``-th entry is the index into ``circuit.data`` of
+        the instruction that emitted the ``i``-th gate, for translating rustiq-side wire
+        references back to positions in ``circuit``.
+
+    Raises:
+        ValueError: ``circuit`` contains any other instruction, an ``rz``/``u1`` with an
+            unbound parameter, or one whose angle is not a real multiple of pi/2.
     """
-    # Filter out measurements and barriers when checking gate set
-    gate_names = set(
-        q.operation.name for q in circuit if q.operation.name not in ("measure", "barrier")
-    )
-    assert gate_names <= set(
-        ("cx", "h", "s", "x", "z", "sx", "sxdg", "sdg", "cz", "rz", "u1", "id")
-    ), f"Gate set is: {gate_names}"
-
     rustiq_circuit = []
     qiskit_inst_indices = []
 
@@ -71,31 +72,24 @@ def convert_to_rustiq_circuit(circuit):
             raise ValueError(f"Unsupported gate {gate}")
         name = _NAMES_CONVERSION[gate.operation.name]
         if name == "RZ":
-            param = gate.operation.params[0]
-            if isinstance(param, (np.complex128, np.complex64, complex)):
-                param = float(np.real(param))
             try:
-                param = float(param) % (2 * np.pi)
+                param = complex(gate.operation.params[0])
             except TypeError as exc:
                 raise ValueError(
                     f"Unsupported gate {gate}: unbound parameter; bind it to a multiple of pi/2"
                 ) from exc
-            if np.isclose(param, 0.0) or np.isclose(param, 2 * np.pi):
-                continue
-            if np.isclose(param, np.pi / 2):
-                emit(("S", qbits), inst_idx)
-                continue
-            if np.isclose(param, np.pi):
-                emit(("S", qbits), inst_idx)
-                emit(("S", qbits), inst_idx)
-                continue
-            if np.isclose(param, 3 * np.pi / 2):
-                emit(("Sd", qbits), inst_idx)
-                continue
-            raise ValueError(
-                f"Unsupported gate {gate}: non-Clifford rz angle {param:.4f} (not a multiple "
-                "of pi/2)"
-            )
+            # Round to the nearest quarter turn with one absolute tolerance, so that
+            # e.g. rz(-eps) and rz(eps) are classified alike.
+            quarter_turns = param.real / (np.pi / 2)
+            nearest = round(quarter_turns)
+            if abs(param.imag) > 1e-8 or abs(quarter_turns - nearest) > 1e-8:
+                raise ValueError(
+                    f"Unsupported gate {gate}: non-Clifford rz angle {param:.4g} (not a real "
+                    "multiple of pi/2)"
+                )
+            for rustiq_name in ((), ("S",), ("S", "S"), ("Sd",))[nearest % 4]:
+                emit((rustiq_name, qbits), inst_idx)
+            continue
         if name == "I":
             continue
         if name == "X":
@@ -110,8 +104,7 @@ def convert_to_rustiq_circuit(circuit):
 
 
 def convert_to_qiskit_circuit(circuit, nqbits):
-    """Turns a rustiq circuit into a qiskit circuit
-    """
+    """Turns a rustiq circuit into a qiskit circuit"""
     qs_circuit = QuantumCircuit(nqbits)
     for gate, qbits in circuit:
         if gate == "H":
@@ -136,14 +129,21 @@ def convert_to_qiskit_circuit(circuit, nqbits):
 def convert_noise_model(noise_model, circuit: QuantumCircuit) -> RustNoiseModel | None:
     """Validate a :class:`~qiskit_paulice.NoiseModel` and convert its gate noise to Rust.
 
-    Returns the Rust gate-noise model, or ``None`` when the model carries no gate noise (an
-    empty gate-noise dict counts as none). Readout noise is left to the caller.
+    Args:
+        noise_model: The noise model to validate and convert.
+        circuit: The circuit the noise model will be applied to; layered gate noise requires
+            it to contain no ``cx`` gates.
+
+    Returns:
+        The Rust noise model for the gate noise, or ``None`` when there is no gate noise (an
+        empty gate-noise dict counts as none). Readout noise is validated but not converted.
 
     Raises:
-        ValueError: Idling noise is set (the Rust idling model is not trusted); the model is
-            empty; ``readout_noise`` lies outside ``[0, 0.5)``; the gate noise is not a
-            recognized specification; or layered noise is paired with a circuit containing
-            CX gates, which the Rust layering pass cannot handle.
+        ValueError: Idling noise is set; the model has neither gate nor readout noise;
+            ``readout_noise`` lies outside ``[0, 0.5)``; uniform gate noise lies outside
+            ``[0, 3)``; the gate noise is not a number, a layered or a gate-wise
+            specification; or layered gate noise is paired with a
+            circuit containing ``cx`` gates.
     """
     if noise_model.idling_noise is not None:
         raise ValueError("Idling noise is not supported.")
@@ -154,8 +154,11 @@ def convert_noise_model(noise_model, circuit: QuantumCircuit) -> RustNoiseModel 
     first_key = next(iter(gate_noise), None) if isinstance(gate_noise, dict) else None
     if gate_noise is None or gate_noise == {}:
         model = None
-    elif isinstance(gate_noise, float):
-        model = RustNoiseModel.uniform_depolarizing(gate_noise)
+    elif isinstance(gate_noise, Real) and not isinstance(gate_noise, bool):
+        # The Rust rate -ln(1 - p/3)/4 is finite and non-negative only for p in [0, 3).
+        if not 0 <= gate_noise < 3:
+            raise ValueError(f"Uniform gate_noise must lie in [0, 3), not {gate_noise!r}.")
+        model = RustNoiseModel.uniform_depolarizing(float(gate_noise))
     elif isinstance(first_key, tuple) and first_key and isinstance(first_key[0], tuple):
         if any(inst.operation.name == "cx" for inst in circuit.data):
             raise ValueError(
@@ -173,7 +176,20 @@ def convert_noise_model(noise_model, circuit: QuantumCircuit) -> RustNoiseModel 
 
 
 def convert_layered_noise(noise):
-    """Canonicalize a :data:`~qiskit_paulice.noise_models.LayeredGateNoise` for Rust."""
+    """Convert layered gate noise to the form the Rust layered noise model expects.
+
+    Args:
+        noise: A :data:`~qiskit_paulice.noise_models.LayeredGateNoise` mapping each layer (a
+            tuple of qubit-pair edges) to ``(pauli, rate)`` pairs, where ``pauli`` is a
+            :class:`~qiskit.quantum_info.Pauli` or a label with qubit 0 rightmost.
+
+    Returns:
+        The same mapping with each edge written ``(min, max)``, each layer's edges sorted,
+        and each Pauli given as a label with qubit 0 leftmost.
+
+    Raises:
+        ValueError: The edges of a layer share a qubit.
+    """
     new_noise = {}
     for layer in noise:
         # The Rust layering pass always uses canonical ``(min, max)`` edge tuples internally,
@@ -199,13 +215,25 @@ def convert_layered_noise(noise):
 
 
 def convert_gate_wise_noise(noise):
-    """Encode a :data:`~qiskit_paulice.noise_models.GateWiseNoise` in Rust's integer form."""
+    """Convert gate-wise noise to the integer form the Rust gate-wise noise model expects.
+
+    Args:
+        noise: A :data:`~qiskit_paulice.noise_models.GateWiseNoise` mapping each edge
+            ``(a, b)`` to ``(pauli, rate)`` pairs, where ``pauli`` is a 2-character label whose
+            first character acts on ``a`` and second on ``b``.
+
+    Returns:
+        The same mapping with each label replaced by a pair of integers, 0=I, 1=X, 2=Y, 3=Z.
+
+    Raises:
+        ValueError: A Pauli is not a 2-character string of ``I``, ``X``, ``Y`` and ``Z``.
+    """
     pauli_map = {"I": 0, "X": 1, "Y": 2, "Z": 3}
     new_noise = {}
     for edge in noise:
         converted_noise = []
         for p_str, r in noise[edge]:
-            if not isinstance(p_str, str) or len(p_str) != 2:
+            if not isinstance(p_str, str) or len(p_str) != 2 or not set(p_str) <= set(pauli_map):
                 raise ValueError(
                     "Each gate-wise generator must be a 2-character Pauli string paired "
                     "left-to-right with the edge tuple (e.g. 'XZ' on edge (a, b) = X on a, "

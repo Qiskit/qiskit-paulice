@@ -34,7 +34,9 @@ from ._internal.conversion import convert_noise_model as _convert_noise_model
 from ._internal.conversion import convert_to_rustiq_circuit as _convert_to_rustiq_circuit
 from ._internal.doping import dope_circuit as _dope_circuit
 from ._internal.utils import build_check_picker as _build_check_picker
+from ._internal.utils import validate_terminal_measurements as _validate_terminal_measurements
 from .noise_models import NoiseModel
+from .wire import Wire
 
 # Non-unitary instructions :meth:`CheckedCircuit.box` accepts; all else is rejected.
 _NON_GATES = frozenset({"measure", "barrier"})
@@ -49,19 +51,6 @@ BOXING_DEFAULTS: dict[str, Any] = {
 }
 """Options :meth:`CheckedCircuit.box` passes to
 :func:`~samplomatic.transpiler.generate_boxing_pass_manager`, before ``**kwargs`` overrides."""
-
-
-class Wire(NamedTuple):
-    """Description of a timespan between two consecutive gates in a quantum circuit.
-
-    Attributes:
-        qubit: Index of the qubit.
-        after_instruction: Index into ``QuantumCircuit.data`` of the instruction the wire follows.
-            ``None`` denotes the qubit's input wire.
-    """
-
-    qubit: int
-    after_instruction: int | None
 
 
 class UncoveredPauli(NamedTuple):
@@ -123,6 +112,10 @@ class CheckedCircuit:
             together to give that check's syndrome bit.
         cost: The value of the cost function with respect to the checks in ``circuit``
         cost_metric: The metric used to evaluate check quality (``gamma`` or ``LER``)
+
+    Raises:
+        ValueError: ``circuit`` has a qubit with an instruction other than a barrier after its
+            measurement.
     """
 
     circuit: QuantumCircuit
@@ -133,7 +126,8 @@ class CheckedCircuit:
     cost_metric: str | None = None
 
     def __post_init__(self) -> None:
-        """Coerce mutable sequence inputs to tuples."""
+        """Reject non-terminal measurements and coerce mutable sequence inputs to tuples."""
+        _validate_terminal_measurements(self.circuit)
         object.__setattr__(self, "target_qubits", tuple(self.target_qubits))
         object.__setattr__(self, "check_qubits", tuple(self.check_qubits))
         object.__setattr__(
@@ -325,19 +319,23 @@ class CheckedCircuit:
     ) -> DopedCircuit:
         r"""Dope the circuit with ``RZ`` rotations.
 
-        Rotations are inserted on wires where each one is irreducible, following the site
-        selection of `arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`_, Sec. S1.3 (of
-        two equivalent rotations, the earliest is kept), and only on wires that preserve
-        every check, so post-selection is unaffected. A circuit without checks is doped as
-        ``CheckedCircuit(circuit).dope()``.
+        Rotations go only on non-check wires where they leave every check's syndrome
+        unchanged, so post-selection is unaffected. Among those, sites follow
+        `arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`_, Sec. S1.3: a rotation is
+        dropped if it can be commuted past the other rotations to the start of the circuit,
+        where it only adds a global phase, or to the end, where it does not change Z-basis
+        measurement outcomes. Of two rotations about the same Pauli with nothing
+        anticommuting between them, only the earlier is kept. The remaining sites are
+        irreducible. Each rotation is placed directly after the gate its wire follows. A
+        circuit without checks is doped as ``CheckedCircuit(circuit).dope()``.
 
         Args:
             num_sites: Number of sites to dope, drawn at random from the valid sites and
                 pruned so that the drawn subset is itself irreducible; ``None`` uses every
                 valid site.
-            wires: Candidate wires: ``"all"`` wire segments, or only those directly
-                ``"after_entangling"`` or ``"before_entangling"`` a multi-qubit gate, one
-                per qubit per entangling layer (the reference uses the former).
+            wires: Candidate wires: ``"all"`` wires (as in the reference), or only those
+                directly ``"after_entangling"`` or ``"before_entangling"`` a multi-qubit
+                gate, one per qubit per entangling gate.
             angle: Rotation angle of every inserted ``rz``; the default :math:`\pi/4` is a
                 ``T`` gate, and a Clifford angle such as :math:`\pi/2` keeps the circuit
                 Clifford. ``None`` inserts ``rz(dope[i])`` at ``doped_wires[i]`` instead:
@@ -349,15 +347,15 @@ class CheckedCircuit:
             The doped circuit, which keeps this circuit as :attr:`.DopedCircuit.checked`.
 
         Raises:
-            ValueError: :attr:`circuit` contains a non-Clifford instruction or a
-                non-terminal measurement, ``wires`` is not one of the allowed values,
+            ValueError: :attr:`circuit` contains a non-Clifford instruction, ``wires`` is not
+                one of the allowed values,
                 ``num_sites`` is out of range, or no irreducible subset of that size could
                 be drawn.
         """
         doped, sites = _dope_circuit(
             self.circuit, self.check_qubits, self.check_support, num_sites, wires, angle, seed
         )
-        return DopedCircuit(doped, tuple(Wire(*site) for site in sites), self)
+        return DopedCircuit(doped, tuple(sites), self)
 
     def box(
         self,
@@ -520,7 +518,8 @@ class DopedCircuit:
 
     Attributes:
         circuit: The doped circuit; parametrized if it was doped with ``angle=None``.
-        doped_wires: The wires holding the rotations, sorted by circuit position.
+        doped_wires: The wires holding the rotations, sorted by circuit position, with
+            instruction indices into :attr:`checked`'s circuit.
         checked: The undoped :class:`CheckedCircuit` this was made from.
     """
 
@@ -574,23 +573,11 @@ def _fault_channels(
         whole circuit's Clifford for pushing images back to the input.
 
     Raises:
-        ValueError: on a non-Clifford instruction, a non-terminal measurement, or a rate
-            that is negative or not finite.
+        ValueError: on a non-Clifford instruction, or a rate that is negative or not finite.
     """
-    touched: set[int] = set()
-    for inst in reversed(circuit.data):
-        qargs = [circuit.find_bit(qubit).index for qubit in inst.qubits]
-        if inst.operation.name == "measure":
-            if qargs[0] in touched:
-                raise ValueError(
-                    f"Qubit {qargs[0]} is used after its measurement; only terminal "
-                    "measurements are supported."
-                )
-        elif inst.operation.name != "barrier":
-            touched.update(qargs)
     try:
         gates, _ = _convert_to_rustiq_circuit(circuit)
-    except (ValueError, AssertionError) as exc:
+    except ValueError as exc:
         raise ValueError(f"Non-Clifford instruction in circuit: {exc}") from exc
 
     num_qubits = circuit.num_qubits

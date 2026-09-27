@@ -11,8 +11,6 @@ Checked circuit (:mod:`qiskit_paulice.checked_circuit`)
 
 .. autoclass:: CheckedCircuit
 .. autoclass:: DopedCircuit
-.. autoclass:: Wire
-   :exclude-members: qubit, after_instruction
 .. autoclass:: UncoveredPauli
    :exclude-members: qubit, after_instruction, pauli
 .. autoclass:: FaultRates

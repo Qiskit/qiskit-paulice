@@ -13,9 +13,10 @@
 """Library for implementing spacetime coherent Pauli checks."""
 
 from . import _internal
-from .checked_circuit import CheckedCircuit, DopedCircuit, FaultRates, UncoveredPauli, Wire
+from .checked_circuit import CheckedCircuit, DopedCircuit, FaultRates, UncoveredPauli
 from .checks import add_pauli_checks
 from .noise_models import NoiseModel
+from .wire import Wire
 
 __all__ = [
     "CheckedCircuit",
