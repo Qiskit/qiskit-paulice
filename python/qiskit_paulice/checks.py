@@ -29,6 +29,7 @@ from ._internal import Metric as _Metric
 from ._internal import NoiseModel as _NoiseModel
 from ._internal import pick_checks as _pick_checks
 from ._internal.conversion import convert_noise_model as _convert_noise_model
+from ._internal.utils import validate_terminal_measurements as _validate_terminal_measurements
 from .checked_circuit import CheckedCircuit
 from .noise_models import NoiseModel
 
@@ -54,7 +55,7 @@ def add_pauli_checks(
     good check on ``target_qubits[1]`` will begin. For this reason, the ordering of
     ``target_qubits`` can have some impact on the set of checks produced by the function.
 
-    This function produces :class:`qiskit_paulice.CheckedCircuit` instances containing numbers of
+    This function produces :class:`~qiskit_paulice.checked_circuit.CheckedCircuit` instances containing numbers of
     checks ranging from ``0`` to one check per target qubit. It can be instructive to view the
     convergence of the cost function as more checks are added, as one may see convergence of the
     cost using fewer checks.
@@ -63,9 +64,10 @@ def add_pauli_checks(
 
     Args:
         circuit: The Clifford circuit to dress with spacetime Pauli checks. The circuit must be
-            terminated with a measurement on at least one qubit. The circuit may be defined on
-            virtual or physical qubits. If the circuit has a layout, the user must provide
-            ``ancilla_qubits``.
+            terminated with a measurement on at least one qubit, and a measured qubit may have
+            nothing but barriers after its measurement (a ``ValueError`` is raised otherwise).
+            The circuit may be defined on virtual or physical qubits. If the circuit has a
+            layout, the user must provide ``ancilla_qubits``.
         target_qubits: Qubit indices of ``circuit`` which will be used to entangle the check
             qubits to the payload. When ``circuit`` has a layout (ISA mode), these are physical
             qubit indices, in the same index space as ``ancilla_qubits``.
@@ -74,7 +76,7 @@ def add_pauli_checks(
             process. While one can generate a noise model from learned Pauli-Lindblad noise, a rougher
             approximation of the noise generated from backend benchmark data is often sufficient.
             Ancilla/target edges introduced by check insertion that aren't in the supplied
-            ``GateWiseNoise`` or ``LayeredNoise`` are auto-inferred (median rate per Pauli pair
+            ``GateWiseNoise`` or ``LayeredGateNoise`` are auto-inferred (median rate per Pauli pair
             across the supplied data); supply them explicitly to override. Idling noise is not
             supported and raises a ``ValueError``.
         cost: Metric to optimize. Can be ``"gamma"`` or ``"LER"`` (logical error rate).
@@ -106,8 +108,8 @@ def add_pauli_checks(
             ``method="windowed"`` is fully deterministic if ``seed`` is not ``None``.
 
     Returns:
-        A list of :class:`qiskit_paulice.CheckedCircuit` instances -- instances containing the bare circuit with
-        no checks and one for each added check. The final element in the output contains the :class:`qiskit_paulice.CheckedCircuit`
+        A list of :class:`~qiskit_paulice.checked_circuit.CheckedCircuit` instances -- instances containing the bare circuit with
+        no checks and one for each added check. The final element in the output contains the :class:`~qiskit_paulice.checked_circuit.CheckedCircuit`
         with checks on every target qubit, assuming a valid set of checks could be found.
     """
     # Set global random seed if provided for full reproducibility
@@ -121,6 +123,7 @@ def add_pauli_checks(
     else:
         raise ValueError(f"Invalid cost value: {cost}")
 
+    _validate_terminal_measurements(circuit)
     circuit = circuit.copy()
 
     # Capture the input circuit's gate set (basis) up front. The picker

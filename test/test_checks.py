@@ -17,6 +17,7 @@ from __future__ import annotations
 import unittest
 import warnings
 
+import numpy as np
 from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister, transpile
 from qiskit.quantum_info import PauliLindbladMap
 from qiskit.transpiler import CouplingMap
@@ -108,14 +109,37 @@ class TestAddPauliChecksValidation(unittest.TestCase):
             add_pauli_checks(_clifford(), [1], noise, seed=0)
 
     def test_invalid_noise_rejected(self):
-        """Unrecognized gate noise, out-of-range readout, and layered noise on CX gates raise."""
+        """Unrecognized gate noise, out-of-range noise, and layered noise on CX gates raise."""
         for noise, message in (
             (NoiseModel(gate_noise="bogus"), "Unrecognized"),
+            (NoiseModel(gate_noise=True), "Unrecognized"),
+            (NoiseModel(gate_noise=-1e-3), "Uniform gate_noise"),
+            (NoiseModel(gate_noise=3.0), "Uniform gate_noise"),
+            (NoiseModel(gate_noise=float("nan")), "Uniform gate_noise"),
+            (NoiseModel(gate_noise=float("inf")), "Uniform gate_noise"),
             (NoiseModel(gate_noise=1e-3, readout_noise=0.5), "readout_noise"),
             (NoiseModel(gate_noise={((0, 1),): [("IXX", 1e-3)]}), "CZ-based"),
         ):
             with self.subTest(noise=noise), self.assertRaisesRegex(ValueError, message):
                 add_pauli_checks(_clifford(), [1], noise, seed=0)
+
+    def test_uniform_gate_noise_range(self):
+        """Uniform gate noise accepts any real number in [0, 3)."""
+        for gate_noise in (0, 0.0, 2.99, np.float32(1e-3), np.int64(0)):
+            with self.subTest(gate_noise=gate_noise):
+                noise = NoiseModel(gate_noise=gate_noise, readout_noise=1e-2)
+                self.assertGreater(len(add_pauli_checks(_clifford(), [1], noise, seed=0)), 0)
+
+    def test_non_terminal_measurement_rejected(self):
+        """A gate or a second measurement after a qubit's measurement raises."""
+        noise = NoiseModel(gate_noise=1e-3)
+        gate_after = _clifford()
+        gate_after.x(0)
+        measured_twice = _clifford()
+        measured_twice.measure(0, 0)
+        for circuit in (gate_after, measured_twice):
+            with self.subTest(circuit=circuit), self.assertRaisesRegex(ValueError, "after its"):
+                add_pauli_checks(circuit, [1], noise, seed=0)
 
 
 class TestAddPauliChecksOutputBasis(unittest.TestCase):
