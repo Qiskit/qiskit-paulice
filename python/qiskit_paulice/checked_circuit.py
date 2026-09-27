@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from functools import cached_property
 from itertools import groupby
 from typing import Any, Literal, NamedTuple
@@ -34,8 +34,8 @@ from ._internal.conversion import convert_noise_model as _convert_noise_model
 from ._internal.conversion import convert_to_rustiq_circuit as _convert_to_rustiq_circuit
 from ._internal.doping import dope_circuit as _dope_circuit
 from ._internal.utils import build_check_picker as _build_check_picker
+from .doped_circuit import DopedCircuit
 from .noise_models import NoiseModel
-from .wire import Wire
 
 # Non-unitary instructions :meth:`CheckedCircuit.box` accepts; all else is rejected.
 _NON_GATES = frozenset({"measure", "barrier"})
@@ -518,38 +518,6 @@ class CheckedCircuit:
             if stratum_key != end:
                 out.barrier()
         return out
-
-
-@dataclass(frozen=True, eq=False)
-class DopedCircuit:
-    """A checked circuit with doping rotations inserted by :meth:`CheckedCircuit.dope`.
-
-    Doping preserves the checks, so post-selection and boxing carry over unchanged. Analyses
-    of the Clifford skeleton (:attr:`CheckedCircuit.uncovered_paulis`,
-    :meth:`CheckedCircuit.estimate_fault_rates`) belong to the undoped :attr:`checked`.
-
-    Attributes:
-        circuit: The doped circuit; parametrized if it was doped with ``angle=None``.
-        doped_wires: The wires holding the rotations, sorted by circuit position, with
-            instruction indices into :attr:`checked`'s circuit.
-        checked: The undoped :class:`CheckedCircuit` this was made from.
-    """
-
-    circuit: QuantumCircuit
-    doped_wires: tuple[Wire, ...]
-    checked: CheckedCircuit
-
-    def get_postselection_method(self) -> Callable[[str | np.ndarray], np.ndarray]:
-        """See :meth:`CheckedCircuit.get_postselection_method`; the checks are unchanged."""
-        return self.checked.get_postselection_method()
-
-    def box(
-        self,
-        payload_layers: Iterable[Iterable[tuple[int, int]]] | None = None,
-        **kwargs,
-    ) -> QuantumCircuit:
-        """See :meth:`CheckedCircuit.box`, applied to the doped circuit."""
-        return replace(self.checked, circuit=self.circuit).box(payload_layers, **kwargs)
 
 
 def _edge_to_layers(

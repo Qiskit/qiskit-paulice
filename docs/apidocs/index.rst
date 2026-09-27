@@ -15,6 +15,7 @@
 
    qiskit_paulice.checks
    qiskit_paulice.checked_circuit
+   qiskit_paulice.doped_circuit
    qiskit_paulice.noise_models
    qiskit_paulice.layout
    qiskit_paulice.wire
