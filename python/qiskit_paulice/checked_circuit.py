@@ -317,40 +317,44 @@ class CheckedCircuit:
         angle: float | None = np.pi / 4,
         seed: int | np.random.Generator | None = None,
     ) -> DopedCircuit:
-        r"""Dope the circuit with ``RZ`` rotations.
+        r"""Dope ``self.circuit`` with :class:`~qiskit.circuit.library.RZGate` rotations.
 
-        Rotations go only on non-check wires where they leave every check's syndrome
-        unchanged, so post-selection is unaffected. Among those, sites follow
-        `arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`_, Sec. S1.3: a rotation is
-        dropped if it can be commuted past the other rotations to the start of the circuit,
-        where it only adds a global phase, or to the end, where it does not change Z-basis
-        measurement outcomes. Of two rotations about the same Pauli with nothing
-        anticommuting between them, only the earlier is kept. The remaining sites are
-        irreducible. Each rotation is placed directly after the gate its wire follows. A
-        circuit without checks is doped as ``CheckedCircuit(circuit).dope()``.
+        Every rotation commutes with all check stabilizers. See
+        `arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`_ for more details.
 
         Args:
-            num_sites: Number of sites to dope, drawn at random from the valid sites and
-                pruned so that the drawn subset is itself irreducible; ``None`` uses every
-                valid site.
-            wires: Candidate wires: ``"all"`` wires (as in the reference), or only those
-                directly ``"after_entangling"`` or ``"before_entangling"`` a multi-qubit
-                gate, one per qubit per entangling gate.
-            angle: Rotation angle of every inserted ``rz``; the default :math:`\pi/4` is a
-                ``T`` gate, and a Clifford angle such as :math:`\pi/2` keeps the circuit
-                Clifford. ``None`` inserts ``rz(dope[i])`` at ``doped_wires[i]`` instead:
-                one template covering every doping configuration, each of which preserves
-                the code.
+            num_sites: Number of :class:`~qiskit.circuit.library.RZGate` rotations to place in
+                the circuit. ``None`` uses every possible location.
+            wires: Which wires may hold a rotation:
+
+                * ``"all"``: every wire, as in the reference.
+                * ``"after_entangling"``: only the wire directly after each multi-qubit gate,
+                  on each of its qubits.
+                * ``"before_entangling"``: only the wire directly before each multi-qubit
+                  gate, on each of its qubits.
+
+            angle: Rotation angle of every inserted :class:`~qiskit.circuit.library.RZGate`.
+                The default :math:`\pi/4` is a ``T`` gate, and a Clifford angle such as
+                :math:`\pi/2` keeps the circuit Clifford. ``None`` instead gives each rotation
+                its own parameter from a :class:`~qiskit.circuit.ParameterVector` named
+                ``dope``. The returned :attr:`.DopedCircuit.doped_wires` lists where the
+                rotations are, in circuit order: each is a :class:`~qiskit_paulice.wire.Wire` giving
+                the qubit and the index into :attr:`circuit` of the gate the rotation follows
+                (``None`` for the start of the circuit). The rotation on ``doped_wires[i]`` has
+                angle ``dope[i]``, so binding a list of angles with
+                :meth:`~qiskit.circuit.QuantumCircuit.assign_parameters` sets them in
+                ``doped_wires`` order.
             seed: Seed or generator for the random site selection.
 
         Returns:
-            The doped circuit, which keeps this circuit as :attr:`.DopedCircuit.checked`.
+            A :class:`.DopedCircuit` holding the doped circuit, the wires of its rotations, and
+            this circuit as :attr:`.DopedCircuit.checked`.
 
         Raises:
-            ValueError: :attr:`circuit` contains a non-Clifford instruction, ``wires`` is not
-                one of the allowed values,
-                ``num_sites`` is out of range, or no irreducible subset of that size could
-                be drawn.
+            ValueError: :attr:`circuit` contains a non-Clifford instruction.
+            ValueError: ``wires`` is not one of the allowed values.
+            ValueError: ``num_sites`` is negative or larger than the number of valid sites.
+            ValueError: ``num_sites`` sites could not be drawn at random from the valid sites.
         """
         doped, sites = _dope_circuit(
             self.circuit, self.check_qubits, self.check_support, num_sites, wires, angle, seed

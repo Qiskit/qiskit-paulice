@@ -55,7 +55,7 @@ def add_pauli_checks(
     good check on ``target_qubits[1]`` will begin. For this reason, the ordering of
     ``target_qubits`` can have some impact on the set of checks produced by the function.
 
-    This function produces :class:`qiskit_paulice.CheckedCircuit` instances containing numbers of
+    This function produces :class:`~qiskit_paulice.checked_circuit.CheckedCircuit` instances containing numbers of
     checks ranging from ``0`` to one check per target qubit. It can be instructive to view the
     convergence of the cost function as more checks are added, as one may see convergence of the
     cost using fewer checks.
@@ -108,8 +108,8 @@ def add_pauli_checks(
             ``method="windowed"`` is fully deterministic if ``seed`` is not ``None``.
 
     Returns:
-        A list of :class:`qiskit_paulice.CheckedCircuit` instances -- instances containing the bare circuit with
-        no checks and one for each added check. The final element in the output contains the :class:`qiskit_paulice.CheckedCircuit`
+        A list of :class:`~qiskit_paulice.checked_circuit.CheckedCircuit` instances -- instances containing the bare circuit with
+        no checks and one for each added check. The final element in the output contains the :class:`~qiskit_paulice.checked_circuit.CheckedCircuit`
         with checks on every target qubit, assuming a valid set of checks could be found.
     """
     # Set global random seed if provided for full reproducibility

@@ -1,9 +1,6 @@
 ---
 features:
   - |
-    Added the new :meth:`qiskit_paulice.CheckedCircuit.dope` method, which dopes the circuit
-    with irreducible ``RZ`` rotations at sites selected as in
-    `arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`__, Sec. S1.3, preserving its
-    spacetime code. It returns the new :class:`qiskit_paulice.DopedCircuit`, which records the
-    doped wires as :class:`qiskit_paulice.Wire` instances, keeps the undoped circuit, and
-    supports post-selection and boxing.
+    Added the new :meth:`qiskit_paulice.checked_circuit.CheckedCircuit.dope` method, which adds ``RZ`` rotations
+    that commute with all spacetime check stabilizers. See `arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`__
+    for details.

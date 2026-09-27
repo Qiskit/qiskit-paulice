@@ -75,7 +75,7 @@ class NoiseModel:
     """Qubit decay rate during idle time. Total error probability is given as ``1 - exp(-t / idling_noise)``.
 
     Not currently supported: both :func:`~qiskit_paulice.checks.add_pauli_checks` and
-    :meth:`~qiskit_paulice.CheckedCircuit.estimate_fault_rates` raise if this is set."""
+    :meth:`~qiskit_paulice.checked_circuit.CheckedCircuit.estimate_fault_rates` raise if this is set."""
 
     @classmethod
     def from_backend(
@@ -214,9 +214,9 @@ class NoiseModel:
         rates.
 
         Args:
-            layer_noise: A sequence of :class:`PauliLindbladMap` objects, where each map represents
+            layer_noise: A sequence of :class:`~qiskit.quantum_info.PauliLindbladMap` objects, where each map represents
                 the noise channel for one unique entangling layer in the circuit.
-            readout_noise: Optional :class:`PauliLindbladMap` containing Pauli X generators on each
+            readout_noise: Optional :class:`~qiskit.quantum_info.PauliLindbladMap` containing Pauli X generators on each
                 qubit for readout errors.
 
         Returns:
