@@ -96,9 +96,9 @@ def convert_to_rustiq_circuit(circuit):
                 f"Unsupported gate {gate}: non-Clifford rz angle {param:.4f} (not a multiple "
                 "of pi/2)"
             )
-        elif name == "I":
+        if name == "I":
             continue
-        elif name == "X":
+        if name == "X":
             emit(("SqrtX", qbits), inst_idx)
             emit(("SqrtX", qbits), inst_idx)
         elif name == "Z":
