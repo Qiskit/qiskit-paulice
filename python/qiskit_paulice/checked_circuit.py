@@ -34,7 +34,6 @@ from ._internal.conversion import convert_noise_model as _convert_noise_model
 from ._internal.conversion import convert_to_rustiq_circuit as _convert_to_rustiq_circuit
 from ._internal.doping import dope_circuit as _dope_circuit
 from ._internal.utils import build_check_picker as _build_check_picker
-from ._internal.utils import validate_terminal_measurements as _validate_terminal_measurements
 from .noise_models import NoiseModel
 from .wire import Wire
 
@@ -112,10 +111,6 @@ class CheckedCircuit:
             together to give that check's syndrome bit.
         cost: The value of the cost function with respect to the checks in ``circuit``
         cost_metric: The metric used to evaluate check quality (``gamma`` or ``LER``)
-
-    Raises:
-        ValueError: ``circuit`` has a qubit with an instruction other than a barrier after its
-            measurement.
     """
 
     circuit: QuantumCircuit
@@ -126,8 +121,7 @@ class CheckedCircuit:
     cost_metric: str | None = None
 
     def __post_init__(self) -> None:
-        """Reject non-terminal measurements and coerce mutable sequence inputs to tuples."""
-        _validate_terminal_measurements(self.circuit)
+        """Coerce mutable sequence inputs to tuples."""
         object.__setattr__(self, "target_qubits", tuple(self.target_qubits))
         object.__setattr__(self, "check_qubits", tuple(self.check_qubits))
         object.__setattr__(
@@ -343,6 +337,7 @@ class CheckedCircuit:
 
         Raises:
             ValueError: :attr:`circuit` contains a non-Clifford instruction.
+            ValueError: :attr:`circuit` uses a qubit after its measurement.
             ValueError: ``wires`` is not one of the allowed values.
             ValueError: ``num_sites`` is negative or larger than the number of valid sites.
             ValueError: ``num_sites`` sites could not be drawn at random from the valid sites.
@@ -590,8 +585,20 @@ def _fault_channels(
         whole circuit's Clifford for pushing images back to the input.
 
     Raises:
-        ValueError: on a non-Clifford instruction, or a rate that is negative or not finite.
+        ValueError: on a non-Clifford instruction, a non-terminal measurement, or a rate
+            that is negative or not finite.
     """
+    touched: set[int] = set()
+    for inst in reversed(circuit.data):
+        qargs = [circuit.find_bit(qubit).index for qubit in inst.qubits]
+        if inst.operation.name == "measure":
+            if qargs[0] in touched:
+                raise ValueError(
+                    f"Qubit {qargs[0]} is used after its measurement; only terminal "
+                    "measurements are supported."
+                )
+        elif inst.operation.name != "barrier":
+            touched.update(qargs)
     try:
         gates, _ = _convert_to_rustiq_circuit(circuit)
     except ValueError as exc:

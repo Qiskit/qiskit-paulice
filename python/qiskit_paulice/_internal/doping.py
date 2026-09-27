@@ -57,8 +57,8 @@ def dope_circuit(
 
     Raises:
         ValueError: ``wires`` is not an allowed value, ``circuit`` has a non-Clifford
-            instruction, ``num_sites`` is out of range, or the random draw cannot reach
-            ``num_sites`` irredundant rotations.
+            instruction or uses a qubit after its measurement, ``num_sites`` is out of range,
+            or the random draw cannot reach ``num_sites`` irredundant rotations.
     """
     if wires not in ("all", "after_entangling", "before_entangling"):
         raise ValueError(
@@ -152,7 +152,8 @@ def _sweep_wire_segments(
         Pauli of each, and the Clifford of the whole circuit.
 
     Raises:
-        ValueError: ``circuit`` has a non-Clifford instruction.
+        ValueError: ``circuit`` has a non-Clifford instruction, or uses a qubit after its
+            measurement.
     """
     data = circuit.data
     qargs = [[circuit.find_bit(qubit).index for qubit in inst.qubits] for inst in data]
@@ -165,6 +166,7 @@ def _sweep_wire_segments(
             last_gate.update(dict.fromkeys(qargs[index], index))
 
     suffix = Clifford.from_label("I" * circuit.num_qubits)
+    touched: set[int] = set()
     candidates: list[Wire] = []
     x_rows: list[np.ndarray] = []
     z_rows: list[np.ndarray] = []
@@ -178,8 +180,17 @@ def _sweep_wire_segments(
     # Sweep backward so that `suffix` is always the Clifford of every gate after `index`.
     for index in range(len(data) - 1, -1, -1):
         name = data[index].operation.name
-        if name in ("barrier", "measure"):
+        if name == "barrier":
             continue
+        if name == "measure":
+            # Sweeping backward, a gate already seen on this qubit lies after the measurement.
+            if qargs[index][0] in touched:
+                raise ValueError(
+                    f"Qubit {qargs[index][0]} is used after its measurement; only terminal "
+                    "measurements are supported."
+                )
+            continue
+        touched.update(qargs[index])
         entangling = len(qargs[index]) > 1
         if wires == "all" or (wires == "after_entangling" and entangling):
             for qubit in qargs[index]:
