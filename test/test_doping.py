@@ -96,6 +96,27 @@ def _propagated(circuit: QuantumCircuit, site: Wire) -> tuple[Pauli, Pauli]:
     return z.evolve(Clifford(suffix), frame="s"), z.evolve(Clifford(prefix), frame="h")
 
 
+def _payload_probabilities(checked: CheckedCircuit, circuit: QuantumCircuit) -> np.ndarray:
+    """Z-basis outcome probabilities of the payload qubits, with and without the check gates.
+
+    Returns the probabilities for ``circuit`` and for ``circuit`` with every instruction
+    touching a check qubit removed, stacked as two rows.
+    """
+    checks = set(checked.check_qubits)
+    payload = [q for q in range(circuit.num_qubits) if q not in checks]
+    stripped = QuantumCircuit(circuit.num_qubits)
+    for inst in circuit.data:
+        qubits = [circuit.find_bit(q).index for q in inst.qubits]
+        if inst.operation.name not in ("measure", "barrier") and not checks & set(qubits):
+            stripped.append(inst.operation, qubits)
+    return np.array(
+        [
+            Statevector(circuit.remove_final_measurements(inplace=False)).probabilities(payload),
+            Statevector(stripped).probabilities(payload),
+        ]
+    )
+
+
 def _syndrome_values(checked: CheckedCircuit, circuit: QuantumCircuit) -> list[float]:
     """The expectation value of each check's syndrome operator on the pre-measurement state."""
     state = Statevector(circuit.remove_final_measurements(inplace=False))
@@ -398,6 +419,28 @@ class TestCheckedCircuitDoping(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "Clifford|parameter"):
                         _ = rewrapped.uncovered_paulis
 
+    def test_checks_transparent_to_payload(self):
+        """The payload samples as if the check gates were absent, doped or not."""
+        circuit = _paper_ansatz(4, seed=2)
+        circuit.measure_all()
+        noise = NoiseModel(gate_noise=1e-3, readout_noise=1e-2)
+        for label, checked in (
+            ("one check", _checked_circuit()),
+            ("two checks", add_pauli_checks(circuit, [1, 2], noise, seed=0)[-1]),
+        ):
+            undoped = _payload_probabilities(checked, checked.circuit)
+            template = checked.dope(angle=None)
+            angles = np.random.default_rng(0).uniform(0, 2 * np.pi, len(template.doped_wires))
+            for doping, doped in (
+                ("T", checked.dope().circuit),
+                ("random angles", template.circuit.assign_parameters(angles)),
+            ):
+                with self.subTest(checked=label, doping=doping):
+                    probabilities = _payload_probabilities(checked, doped)
+                    np.testing.assert_allclose(probabilities[0], probabilities[1], atol=1e-10)
+                    self.assertFalse(np.allclose(probabilities[0], undoped[0], atol=1e-6))
+            np.testing.assert_allclose(undoped[0], undoped[1], atol=1e-10)
+
     def test_template_preserves_code(self):
         """A parametrized template keeps every syndrome at any angles, for every wires rule."""
         checked = _checked_circuit()
@@ -485,6 +528,22 @@ class TestHardwareStyle(unittest.TestCase):
         Clifford(s_doped.remove_final_measurements(inplace=False))
         with self.assertRaises(QiskitError):
             Clifford(default.remove_final_measurements(inplace=False))
+
+    def test_dope_docstring_example(self):
+        """The one-qubit example in the ``dope`` docstring prints and binds as documented."""
+        circuit = QuantumCircuit(1)
+        circuit.h(0)
+        circuit.h(0)
+        circuit.h(0)
+        circuit.measure_all()
+        doped = CheckedCircuit(circuit).dope(angle=None)
+        self.assertEqual(doped.doped_wires, (Wire(0, 0), Wire(0, 1)))
+        bound = doped.circuit.assign_parameters([np.pi / 4, np.pi / 8])
+        self.assertEqual(
+            [inst.operation.name for inst in bound.data][:5], ["h", "rz", "h", "rz", "h"]
+        )
+        angles = [inst.operation.params[0] for inst in bound.data if inst.operation.name == "rz"]
+        np.testing.assert_allclose(angles, [np.pi / 4, np.pi / 8])
 
     def test_parametric_template(self):
         """One template reproduces the default doping at pi/4 and the base circuit at 0."""

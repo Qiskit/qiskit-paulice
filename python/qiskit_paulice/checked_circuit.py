@@ -317,33 +317,24 @@ class CheckedCircuit:
         angle: float | None = np.pi / 4,
         seed: int | np.random.Generator | None = None,
     ) -> DopedCircuit:
-        r"""Dope ``self.circuit`` with :class:`~qiskit.circuit.library.RZGate` rotations.
+        r"""Dope ``self.circuit`` with :class:`~qiskit.circuit.library.RZGate` rotations that commute with check stabilizers.
 
-        Every rotation commutes with all check stabilizers. See
-        `arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`_ for more details.
+        See `arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`_ for more details.
 
         Args:
             num_sites: Number of :class:`~qiskit.circuit.library.RZGate` rotations to place in
                 the circuit. ``None`` uses every possible location.
             wires: Which wires may hold a rotation:
 
-                * ``"all"``: every wire, as in the reference.
-                * ``"after_entangling"``: only the wire directly after each multi-qubit gate,
-                  on each of its qubits.
-                * ``"before_entangling"``: only the wire directly before each multi-qubit
-                  gate, on each of its qubits.
+                * ``"all"``: Dope every possible wire.
+                * ``"after_entangling"``: Dope only wires directly after multi-qubit gates.
+                * ``"before_entangling"``: Dope only wires directly before multi-qubit gates.
 
-            angle: Rotation angle of every inserted :class:`~qiskit.circuit.library.RZGate`.
-                The default :math:`\pi/4` is a ``T`` gate, and a Clifford angle such as
-                :math:`\pi/2` keeps the circuit Clifford. ``None`` instead gives each rotation
-                its own parameter from a :class:`~qiskit.circuit.ParameterVector` named
-                ``dope``. The returned :attr:`.DopedCircuit.doped_wires` lists where the
-                rotations are, in circuit order: each is a :class:`~qiskit_paulice.wire.Wire` giving
-                the qubit and the index into :attr:`circuit` of the gate the rotation follows
-                (``None`` for the start of the circuit). The rotation on ``doped_wires[i]`` has
-                angle ``dope[i]``, so binding a list of angles with
-                :meth:`~qiskit.circuit.QuantumCircuit.assign_parameters` sets them in
-                ``doped_wires`` order.
+            angle: Rotation angle for each inserted :class:`~qiskit.circuit.library.RZGate`.
+                ``None`` instead gives each rotation its own parameter from a
+                :class:`~qiskit.circuit.ParameterVector` named ``dope``. The rotation on
+                ``doped_wires[i]`` gets ``dope[i]``, so a list of angles binds in
+                :attr:`.DopedCircuit.doped_wires` order; see the example below.
             seed: Seed or generator for the random site selection.
 
         Returns:
@@ -355,6 +346,28 @@ class CheckedCircuit:
             ValueError: ``wires`` is not one of the allowed values.
             ValueError: ``num_sites`` is negative or larger than the number of valid sites.
             ValueError: ``num_sites`` sites could not be drawn at random from the valid sites.
+
+        Example:
+            Dope a one-qubit circuit with parametrized rotations, then bind their angles:
+
+            .. code-block:: python
+
+                import numpy as np
+                from qiskit import QuantumCircuit
+                from qiskit_paulice import CheckedCircuit
+
+                circuit = QuantumCircuit(1)
+                circuit.h(0)
+                circuit.h(0)
+                circuit.h(0)
+                circuit.measure_all()
+
+                doped = CheckedCircuit(circuit).dope(angle=None)
+                print(doped.doped_wires)
+                # (Wire(qubit=0, after_instruction=0), Wire(qubit=0, after_instruction=1))
+                # dope[0] follows the first H gate, and dope[1] follows the second.
+
+                bound = doped.circuit.assign_parameters([np.pi / 4, np.pi / 8])
         """
         doped, sites = _dope_circuit(
             self.circuit, self.check_qubits, self.check_support, num_sites, wires, angle, seed
