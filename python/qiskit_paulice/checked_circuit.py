@@ -336,11 +336,11 @@ class CheckedCircuit:
             this circuit as :attr:`.DopedCircuit.checked`.
 
         Raises:
-            ValueError: :attr:`circuit` contains a non-Clifford instruction.
-            ValueError: :attr:`circuit` uses a qubit after its measurement.
+            ValueError: :attr:`circuit` contains a non-Clifford instruction, or uses a qubit after
+                its measurement.
             ValueError: ``wires`` is not one of the allowed values.
-            ValueError: ``num_sites`` is negative or larger than the number of valid sites.
-            ValueError: ``num_sites`` sites could not be drawn at random from the valid sites.
+            ValueError: ``num_sites`` is negative, larger than the number of valid sites, or
+                that many sites could not be drawn at random from them.
 
         Example:
             Dope a one-qubit circuit with parametrized rotations, then bind their angles:
