@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import unittest
-from dataclasses import replace
 
 import numpy as np
 from qiskit.circuit import QuantumCircuit
@@ -28,7 +27,8 @@ from qiskit.quantum_info import (
     Statevector,
     random_clifford,
 )
-from qiskit_paulice import CheckedCircuit, DopedCircuit, Wire
+from qiskit_aer import AerSimulator
+from qiskit_paulice import CheckedCircuit, Wire
 from qiskit_paulice._internal.doping import _prune
 from qiskit_paulice.checks import add_pauli_checks
 from qiskit_paulice.noise_models import NoiseModel
@@ -143,8 +143,8 @@ def _checked_circuit() -> CheckedCircuit:
 
 def _dope(circuit: QuantumCircuit, *args, **kwargs) -> tuple[QuantumCircuit, list[Wire]]:
     """Dope a circuit without checks, returning the doped circuit and its wires."""
-    doped = CheckedCircuit(circuit).dope(*args, **kwargs)
-    return doped.circuit, list(doped.doped_wires)
+    doped_circuit, doped_wires = CheckedCircuit(circuit).dope(*args, **kwargs)
+    return doped_circuit, list(doped_wires)
 
 
 def _gates_on(circuit: QuantumCircuit, qubit: int) -> list[int]:
@@ -362,10 +362,10 @@ class TestPrune(unittest.TestCase):
 class TestCheckedCircuitDoping(unittest.TestCase):
     """Tests for doping a :class:`.CheckedCircuit` without breaking its spacetime code."""
 
-    def _assert_code_preserved(self, checked: CheckedCircuit, doped: CheckedCircuit, sites):
-        """The doped circuit keeps the checks' metadata, wires, syndromes, and cumulants."""
-        self.assertIsInstance(doped, DopedCircuit)
-        self.assertIs(doped.checked, checked)
+    def _assert_code_preserved(
+        self, checked: CheckedCircuit, doped_circuit: QuantumCircuit, sites: list[Wire]
+    ):
+        """The doped circuit keeps the checks' wires, syndromes, and cumulants."""
         num_qubits = checked.circuit.num_qubits
         # Sites avoid ancilla wires and post-measurement wires.
         measure_pos = _measure_positions(checked.circuit)
@@ -376,7 +376,7 @@ class TestCheckedCircuitDoping(unittest.TestCase):
         original = _syndrome_values(checked, checked.circuit)
         for value in original:
             self.assertAlmostEqual(abs(value), 1.0, places=10)
-        np.testing.assert_allclose(_syndrome_values(checked, doped.circuit), original, atol=1e-10)
+        np.testing.assert_allclose(_syndrome_values(checked, doped_circuit), original, atol=1e-10)
         # Z on every doped wire commutes with each check's back-cumulant there.
         for site in sites:
             site_z = Pauli("I" * num_qubits)
@@ -391,33 +391,27 @@ class TestCheckedCircuitDoping(unittest.TestCase):
         """Doping changes the payload distribution but never breaks a check."""
         checked = _checked_circuit()
         self.assertEqual(len(checked.check_qubits), 1)
-        doped = checked.dope()
-        sites = list(doped.doped_wires)
-        self.assertGreater(len(sites), 0)
-        self._assert_code_preserved(checked, doped, sites)
+        doped_circuit, doped_wires = checked.dope()
+        self.assertGreater(len(doped_wires), 0)
+        self._assert_code_preserved(checked, doped_circuit, list(doped_wires))
 
-    def test_doped_circuit_members(self):
-        """A DopedCircuit post-selects and boxes at any angle; its circuit is not re-analysed."""
+    def test_dope_returns_runnable_circuit(self):
+        """``dope`` returns a plain circuit whose results the checked circuit post-selects."""
         checked = _checked_circuit()
-        for label, doped in (
-            ("T", checked.dope()),
-            ("S", checked.dope(angle=np.pi / 2)),
-            ("template", checked.dope(angle=None)),
-        ):
-            with self.subTest(doped=label):
-                self.assertIs(doped.checked, checked)
-                self.assertGreater(len(doped.doped_wires), 0)
-                accept = doped.get_postselection_method()
-                self.assertFalse(accept("0" * doped.circuit.num_qubits).any())
-                self.assertIn("box", doped.box().count_ops())
-                # Wrapping the doped circuit as a CheckedCircuit exposes the Clifford
-                # analyses, which reject non-Clifford angles and unbound parameters clearly.
-                rewrapped = replace(checked, circuit=doped.circuit)
-                if label == "S":
-                    self.assertGreater(len(rewrapped.uncovered_paulis), 0)
-                else:
-                    with self.assertRaisesRegex(ValueError, "Clifford|parameter"):
-                        _ = rewrapped.uncovered_paulis
+        accept = checked.get_postselection_method()
+        for label, angle in (("T", np.pi / 4), ("S", np.pi / 2), ("template", None)):
+            with self.subTest(angle=label):
+                doped_circuit, doped_wires = checked.dope(angle=angle)
+                self.assertIsInstance(doped_circuit, QuantumCircuit)
+                self.assertIsInstance(doped_wires, tuple)
+                self.assertGreater(len(doped_wires), 0)
+                self.assertTrue(all(isinstance(wire, Wire) for wire in doped_wires))
+                self.assertEqual(doped_circuit.cregs, checked.circuit.cregs)
+                if angle is None:
+                    doped_circuit = doped_circuit.assign_parameters([np.pi / 4] * len(doped_wires))
+                counts = AerSimulator(seed_simulator=0).run(doped_circuit, shots=200).result()
+                for bitstring in counts.get_counts():
+                    self.assertFalse(accept(bitstring).any())
 
     def test_checks_transparent_to_payload(self):
         """The payload samples as if the check gates were absent, doped or not."""
@@ -429,11 +423,11 @@ class TestCheckedCircuitDoping(unittest.TestCase):
             ("two checks", add_pauli_checks(circuit, [1, 2], noise, seed=0)[-1]),
         ):
             undoped = _payload_probabilities(checked, checked.circuit)
-            template = checked.dope(angle=None)
-            angles = np.random.default_rng(0).uniform(0, 2 * np.pi, len(template.doped_wires))
+            template, template_wires = checked.dope(angle=None)
+            angles = np.random.default_rng(0).uniform(0, 2 * np.pi, len(template_wires))
             for doping, doped in (
-                ("T", checked.dope().circuit),
-                ("random angles", template.circuit.assign_parameters(angles)),
+                ("T", checked.dope()[0]),
+                ("random angles", template.assign_parameters(angles)),
             ):
                 with self.subTest(checked=label, doping=doping):
                     probabilities = _payload_probabilities(checked, doped)
@@ -447,11 +441,10 @@ class TestCheckedCircuitDoping(unittest.TestCase):
         original = _syndrome_values(checked, checked.circuit)
         for wires in ("all", "after_entangling", "before_entangling"):
             with self.subTest(wires=wires):
-                doped = checked.dope(wires=wires, angle=None)
-                sites = doped.doped_wires
-                self.assertGreater(len(sites), 0)
-                angles = np.random.default_rng(0).uniform(0, 2 * np.pi, len(sites))
-                bound = doped.circuit.assign_parameters(angles)
+                template, doped_wires = checked.dope(wires=wires, angle=None)
+                self.assertGreater(len(doped_wires), 0)
+                angles = np.random.default_rng(0).uniform(0, 2 * np.pi, len(doped_wires))
+                bound = template.assign_parameters(angles)
                 np.testing.assert_allclose(_syndrome_values(checked, bound), original, atol=1e-10)
 
 
@@ -536,9 +529,9 @@ class TestHardwareStyle(unittest.TestCase):
         circuit.h(0)
         circuit.h(0)
         circuit.measure_all()
-        doped = CheckedCircuit(circuit).dope(angle=None)
-        self.assertEqual(doped.doped_wires, (Wire(0, 0), Wire(0, 1)))
-        bound = doped.circuit.assign_parameters([np.pi / 4, np.pi / 8])
+        doped_circuit, doped_wires = CheckedCircuit(circuit).dope(angle=None)
+        self.assertEqual(doped_wires, (Wire(0, 0), Wire(0, 1)))
+        bound = doped_circuit.assign_parameters([np.pi / 4, np.pi / 8])
         self.assertEqual(
             [inst.operation.name for inst in bound.data][:5], ["h", "rz", "h", "rz", "h"]
         )

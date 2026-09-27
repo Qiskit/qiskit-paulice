@@ -15,13 +15,11 @@
 from . import _internal
 from .checked_circuit import CheckedCircuit, FaultRates, UncoveredPauli
 from .checks import add_pauli_checks
-from .doped_circuit import DopedCircuit
 from .noise_models import NoiseModel
 from .wire import Wire
 
 __all__ = [
     "CheckedCircuit",
-    "DopedCircuit",
     "FaultRates",
     "NoiseModel",
     "UncoveredPauli",

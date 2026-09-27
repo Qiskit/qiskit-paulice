@@ -34,8 +34,8 @@ from ._internal.conversion import convert_noise_model as _convert_noise_model
 from ._internal.conversion import convert_to_rustiq_circuit as _convert_to_rustiq_circuit
 from ._internal.doping import dope_circuit as _dope_circuit
 from ._internal.utils import build_check_picker as _build_check_picker
-from .doped_circuit import DopedCircuit
 from .noise_models import NoiseModel
+from .wire import Wire
 
 # Non-unitary instructions :meth:`CheckedCircuit.box` accepts; all else is rejected.
 _NON_GATES = frozenset({"measure", "barrier"})
@@ -310,7 +310,7 @@ class CheckedCircuit:
         wires: Literal["all", "after_entangling", "before_entangling"] = "all",
         angle: float | None = np.pi / 4,
         seed: int | np.random.Generator | None = None,
-    ) -> DopedCircuit:
+    ) -> tuple[QuantumCircuit, tuple[Wire, ...]]:
         r"""Dope ``self.circuit`` with :class:`~qiskit.circuit.library.RZGate` rotations that commute with check stabilizers.
 
         See `arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`_ for more details.
@@ -326,14 +326,17 @@ class CheckedCircuit:
 
             angle: Rotation angle for each inserted :class:`~qiskit.circuit.library.RZGate`.
                 ``None`` instead gives each rotation its own parameter from a
-                :class:`~qiskit.circuit.ParameterVector` named ``dope``. The rotation on
-                ``doped_wires[i]`` gets ``dope[i]``, so a list of angles binds in
-                :attr:`.DopedCircuit.doped_wires` order; see the example below.
+                :class:`~qiskit.circuit.ParameterVector` named ``dope``. The rotation on the
+                returned ``doped_wires[i]`` gets ``dope[i]``, so a list of angles binds in
+                ``doped_wires`` order; see the example below.
             seed: Seed or generator for the random site selection.
 
         Returns:
-            A :class:`.DopedCircuit` holding the doped circuit, the wires of its rotations, and
-            this circuit as :attr:`.DopedCircuit.checked`.
+            ``(doped_circuit, doped_wires)``: a copy of :attr:`circuit` with the rotations
+            inserted, and the :class:`~qiskit_paulice.wire.Wire` holding each rotation, in
+            circuit order and with instruction indices into :attr:`circuit`. The checks and
+            classical bits are unchanged, so :meth:`get_postselection_method` applies to the
+            doped circuit's results.
 
         Raises:
             ValueError: :attr:`circuit` contains a non-Clifford instruction, or uses a qubit after
@@ -357,17 +360,17 @@ class CheckedCircuit:
                 circuit.h(0)
                 circuit.measure_all()
 
-                doped = CheckedCircuit(circuit).dope(angle=None)
-                print(doped.doped_wires)
+                doped_circuit, doped_wires = CheckedCircuit(circuit).dope(angle=None)
+                print(doped_wires)
                 # (Wire(qubit=0, after_instruction=0), Wire(qubit=0, after_instruction=1))
                 # dope[0] follows the first H gate, and dope[1] follows the second.
 
-                bound = doped.circuit.assign_parameters([np.pi / 4, np.pi / 8])
+                bound = doped_circuit.assign_parameters([np.pi / 4, np.pi / 8])
         """
         doped, sites = _dope_circuit(
             self.circuit, self.check_qubits, self.check_support, num_sites, wires, angle, seed
         )
-        return DopedCircuit(doped, tuple(sites), self)
+        return doped, tuple(sites)
 
     def box(
         self,
