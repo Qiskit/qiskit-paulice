@@ -37,7 +37,7 @@ from ._internal.utils import build_check_picker as _build_check_picker
 from .noise_models import NoiseModel
 from .wire import Wire
 
-# Non-unitary instructions :meth:`CheckedCircuit.box` accepts; all else is rejected.
+# Non-unitary instructions :meth:`CheckedCircuit.box` accepts. All else is rejected.
 _NON_GATES = frozenset({"measure", "barrier"})
 
 BOXING_DEFAULTS: dict[str, Any] = {
@@ -57,7 +57,7 @@ class UncoveredPauli(NamedTuple):
 
     Attributes:
         qubit: Index of the qubit where the undetected error sits
-        after_instruction: Index (into ``circuit.data``) of the instruction the error occurs after;
+        after_instruction: Index (into ``circuit.data``) of the instruction the error occurs after.
             ``None`` means the error sits on the qubit's input wire.
         pauli: The undetected Pauli error (``"X"``, ``"Y"``, or ``"Z"``)
     """
@@ -144,7 +144,7 @@ class CheckedCircuit:
         single qubit gates are folded into the next 2-qubit-gate wire.
 
         Raises:
-            ValueError: :attr:`circuit` contains a non-Clifford instruction, e.g. it is doped.
+            ValueError: :attr:`circuit` contains a non-Clifford instruction.
         """
         check_picker = _build_check_picker(
             self.circuit,
@@ -336,20 +336,19 @@ class CheckedCircuit:
                 ``None`` instead gives each rotation its own parameter from a
                 :class:`~qiskit.circuit.ParameterVector` named ``dope``. The rotation on the
                 returned ``doped_wires[i]`` gets ``dope[i]``, so a list of angles binds in
-                ``doped_wires`` order; see the example below.
+                ``doped_wires`` order.
             seed: Seed or generator for the random site selection.
             box: Whether to box the doped circuit, as :meth:`box` boxes :attr:`circuit`.
-            payload_layers: The ``payload_layers`` argument of :meth:`box`; only with
+            payload_layers: The ``payload_layers`` argument of :meth:`box`. Only used with
                 ``box=True``.
             box_options: Overrides for
                 :func:`~samplomatic.transpiler.generate_boxing_pass_manager`, as the
-                ``**kwargs`` of :meth:`box`; only with ``box=True``.
+                ``**kwargs`` of :meth:`box`. Only used with ``box=True``.
 
         Returns:
             ``(doped_circuit, doped_wires)``: a copy of :attr:`circuit` with the rotations
-            inserted, boxed and annotated if ``box`` is ``True``, and the
-            :class:`~qiskit_paulice.wire.Wire` holding each rotation, in circuit order and with
-            instruction indices into the unboxed :attr:`circuit`. The checks and classical bits
+            inserted, and the :class:`~qiskit_paulice.wire.Wire` holding each rotation, in
+            circuit order and with instruction indices into :attr:`circuit`. The checks and classical bits
             are unchanged, so :meth:`get_postselection_method` applies to the doped circuit's
             results.
 

@@ -42,8 +42,8 @@ def dope_circuit(
 
     Args:
         circuit: Clifford circuit, with barriers and terminal measurements allowed.
-        check_qubits: Ancilla qubits of the checks; they never receive a rotation.
-        check_support: For each check, the qubits whose final Z measurements it multiplies.
+        check_qubits: Ancilla qubits of the checks.
+        check_support: For each check, the qubits that comprise its syndrome.
         num_sites: Number of rotations to insert, or ``None`` for every valid wire.
         wires: Candidate wires: ``"all"``, ``"after_entangling"``, or ``"before_entangling"``.
         angle: Angle of every rotation, or ``None`` for a free parameter ``dope[i]`` per
