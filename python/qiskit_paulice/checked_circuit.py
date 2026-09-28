@@ -354,8 +354,7 @@ class CheckedCircuit:
             results.
 
         Raises:
-            ValueError: :attr:`circuit` contains a non-Clifford instruction, or uses a qubit after
-                its measurement.
+            ValueError: :attr:`circuit` contains a non-Clifford instruction.
             ValueError: ``wires`` is not one of the allowed values.
             ValueError: ``payload_layers`` or ``box_options`` is given without ``box=True``, or
                 :meth:`box` rejects the doped circuit.
