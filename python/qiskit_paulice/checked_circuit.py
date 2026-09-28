@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from functools import cached_property
 from itertools import groupby
@@ -33,7 +33,6 @@ from ._internal import NoiseModel as _RustNoiseModel
 from ._internal.conversion import convert_noise_model as _convert_noise_model
 from ._internal.conversion import convert_to_rustiq_circuit as _convert_to_rustiq_circuit
 from ._internal.doping import dope_circuit as _dope_circuit
-from ._internal.doping import validate_doped_circuit as _validate_doped_circuit
 from ._internal.utils import build_check_picker as _build_check_picker
 from .noise_models import NoiseModel
 from .wire import Wire
@@ -311,6 +310,9 @@ class CheckedCircuit:
         wires: Literal["all", "after_entangling", "before_entangling"] = "all",
         angle: float | None = np.pi / 4,
         seed: int | np.random.Generator | None = None,
+        box: bool = False,
+        payload_layers: Iterable[Iterable[tuple[int, int]]] | None = None,
+        box_options: Mapping[str, Any] | None = None,
     ) -> tuple[QuantumCircuit, tuple[Wire, ...]]:
         r"""Dope ``self.circuit`` with :class:`~qiskit.circuit.library.RZGate` rotations that commute with check stabilizers.
 
@@ -331,18 +333,27 @@ class CheckedCircuit:
                 returned ``doped_wires[i]`` gets ``dope[i]``, so a list of angles binds in
                 ``doped_wires`` order; see the example below.
             seed: Seed or generator for the random site selection.
+            box: Whether to box the doped circuit, as :meth:`box` boxes :attr:`circuit`.
+            payload_layers: The ``payload_layers`` argument of :meth:`box`; only with
+                ``box=True``.
+            box_options: Overrides for
+                :func:`~samplomatic.transpiler.generate_boxing_pass_manager`, as the
+                ``**kwargs`` of :meth:`box`; only with ``box=True``.
 
         Returns:
             ``(doped_circuit, doped_wires)``: a copy of :attr:`circuit` with the rotations
-            inserted, and the :class:`~qiskit_paulice.wire.Wire` holding each rotation, in
-            circuit order and with instruction indices into :attr:`circuit`. The checks and
-            classical bits are unchanged, so :meth:`get_postselection_method` applies to the
-            doped circuit's results, and :meth:`box` boxes it via ``doped_circuit``.
+            inserted, boxed and annotated if ``box`` is ``True``, and the
+            :class:`~qiskit_paulice.wire.Wire` holding each rotation, in circuit order and with
+            instruction indices into the unboxed :attr:`circuit`. The checks and classical bits
+            are unchanged, so :meth:`get_postselection_method` applies to the doped circuit's
+            results.
 
         Raises:
             ValueError: :attr:`circuit` contains a non-Clifford instruction, or uses a qubit after
                 its measurement.
             ValueError: ``wires`` is not one of the allowed values.
+            ValueError: ``payload_layers`` or ``box_options`` is given without ``box=True``, or
+                :meth:`box` rejects the doped circuit.
             ValueError: ``num_sites`` is negative, larger than the number of valid sites, or
                 that many sites could not be drawn at random from them.
 
@@ -368,16 +379,18 @@ class CheckedCircuit:
 
                 bound = doped_circuit.assign_parameters([np.pi / 4, np.pi / 8])
         """
+        if not box and (payload_layers is not None or box_options is not None):
+            raise ValueError("payload_layers and box_options require box=True.")
         doped, sites = _dope_circuit(
             self.circuit, self.check_qubits, self.check_support, num_sites, wires, angle, seed
         )
+        if box:
+            doped = self._box(doped, payload_layers, box_options or {})
         return doped, tuple(sites)
 
     def box(
         self,
         payload_layers: Iterable[Iterable[tuple[int, int]]] | None = None,
-        *,
-        doped_circuit: QuantumCircuit | None = None,
         **kwargs,
     ) -> QuantumCircuit:
         """Box :attr:`circuit` while maintaining concurrent scheduling of payload layers.
@@ -396,31 +409,27 @@ class CheckedCircuit:
                 list contains the edges for one unique layer. Edges should not be repeated
                 within the same layer, but may appear in multiple layers; each stratum of the
                 boxed circuit is then consistent with (a subset of) one of these layers.
-            doped_circuit: A doped version of :attr:`circuit` to box in its place, such as the
-                circuit returned by :meth:`dope`. It must be :attr:`circuit` with only
-                :class:`~qiskit.circuit.library.RZGate` rotations added, of any angle or
-                unbound, and with the same registers. Each rotation must come before its
-                qubit's measurement and commute with every check's stabilizer, so the checks
-                and :meth:`get_postselection_method` still apply. ``None`` boxes
-                :attr:`circuit`.
             **kwargs: Overrides for :func:`~samplomatic.transpiler.generate_boxing_pass_manager`.
                 Defaults to the key-value pairs in
                 :data:`~qiskit_paulice.checked_circuit.BOXING_DEFAULTS`.
 
         Returns:
-            :attr:`circuit`, or ``doped_circuit`` if given, boxed and annotated.
+            :attr:`circuit`, boxed and annotated.
 
         Raises:
             ValueError: ``payload_layers`` does not describe this circuit's payload gates.
             ValueError: :attr:`circuit` contains an instruction other than one- and two-qubit
                 unitary gates, measurements, and barriers.
-            ValueError: ``doped_circuit`` is not :attr:`circuit` with check-preserving
-                :class:`~qiskit.circuit.library.RZGate` rotations added.
         """
-        circuit = self.circuit
-        if doped_circuit is not None:
-            _validate_doped_circuit(self.circuit, self.check_support, doped_circuit)
-            circuit = doped_circuit
+        return self._box(self.circuit, payload_layers, kwargs)
+
+    def _box(
+        self,
+        circuit: QuantumCircuit,
+        payload_layers: Iterable[Iterable[tuple[int, int]]] | None,
+        options: Mapping[str, Any],
+    ) -> QuantumCircuit:
+        """Box ``circuit``, which carries this circuit's checks; see :meth:`box`."""
         for instruction in circuit.data:
             operation = instruction.operation
             if operation.name in _NON_GATES:
@@ -430,8 +439,9 @@ class CheckedCircuit:
                     f"'{operation.name}' is not supported: a checked circuit may contain only "
                     "one- and two-qubit unitary gates, measurements, and barriers."
                 )
-        options = {**BOXING_DEFAULTS, **kwargs}
-        return generate_boxing_pass_manager(**options).run(self._stratify(circuit, payload_layers))
+        return generate_boxing_pass_manager(**{**BOXING_DEFAULTS, **options}).run(
+            self._stratify(circuit, payload_layers)
+        )
 
     @cached_property
     def _cb_to_q(self) -> dict[int, int]:

@@ -141,18 +141,6 @@ def _checked_circuit() -> CheckedCircuit:
     return add_pauli_checks(circuit, [1], noise, seed=0)[-1]
 
 
-def _insert_rz(circuit: QuantumCircuit, position: int, qubit: int) -> QuantumCircuit:
-    """A copy of ``circuit`` with ``rz(pi/4)`` on ``qubit`` before ``circuit.data[position]``."""
-    out = circuit.copy_empty_like()
-    for index, inst in enumerate(circuit.data):
-        if index == position:
-            out.rz(np.pi / 4, qubit)
-        out.append(inst)
-    if position == len(circuit.data):
-        out.rz(np.pi / 4, qubit)
-    return out
-
-
 def _dope(circuit: QuantumCircuit, *args, **kwargs) -> tuple[QuantumCircuit, list[Wire]]:
     """Dope a circuit without checks, returning the doped circuit and its wires."""
     doped_circuit, doped_wires = CheckedCircuit(circuit).dope(*args, **kwargs)
@@ -447,99 +435,36 @@ class TestCheckedCircuitDoping(unittest.TestCase):
                     self.assertFalse(np.allclose(probabilities[0], undoped[0], atol=1e-6))
             np.testing.assert_allclose(undoped[0], undoped[1], atol=1e-10)
 
-    def test_box_doped_circuit(self):
-        """A doped circuit boxes like the checked circuit and keeps its rotations."""
+    def test_dope_and_box(self):
+        """``box=True`` boxes the doped circuit like the checked circuit, keeping its rotations."""
         checked = _checked_circuit()
         num_boxes = checked.box().count_ops()["box"]
-        doped_circuit, _ = checked.dope()
-        self.assertEqual(checked.box(doped_circuit=doped_circuit).count_ops()["box"], num_boxes)
-        template, doped_wires = checked.dope(angle=None)
-        boxed = checked.box(doped_circuit=template)
+        boxed, _ = checked.dope(box=True)
         self.assertEqual(boxed.count_ops()["box"], num_boxes)
+        template, doped_wires = checked.dope(angle=None, box=True)
+        self.assertEqual(template.count_ops()["box"], num_boxes)
         self.assertEqual(
-            {parameter.name for parameter in boxed.parameters},
+            {parameter.name for parameter in template.parameters},
             {f"dope[{i}]" for i in range(len(doped_wires))},
         )
         with_barriers = _paper_ansatz(3, seed=1)
         with_barriers.barrier()
         with_barriers.sx(0)
         with_barriers.measure_all()
-        plain = CheckedCircuit(with_barriers)
-        doped_circuit, doped_wires = plain.dope()
+        boxed, doped_wires = CheckedCircuit(with_barriers).dope(box=True)
         self.assertGreater(len(doped_wires), 0)
-        self.assertIn("box", plain.box(doped_circuit=doped_circuit).count_ops())
+        self.assertIn("box", boxed.count_ops())
 
-    def test_box_rejects_invalid_doped_circuit(self):
-        """``box`` rejects a circuit that is not the checked circuit plus preserving rotations."""
+    def test_dope_box_arguments(self):
+        """``payload_layers`` and ``box_options`` reach the boxing, and require ``box=True``."""
         checked = _checked_circuit()
-        circuit = checked.circuit
-        extra_qubit = QuantumCircuit(circuit.num_qubits + 1, circuit.num_clbits)
-        missing = circuit.copy_empty_like()
-        for inst in circuit.data[:-1]:
-            missing.append(inst)
-        changed = circuit.copy_empty_like()
-        changed.x(0)
-        for inst in circuit.data[1:]:
-            changed.append(inst)
-        extra_gate = circuit.copy_empty_like()
-        extra_gate.sx(0)
-        for inst in circuit.data:
-            extra_gate.append(inst)
-        swapped_clbits = circuit.copy_empty_like()
-        measures = [i for i, inst in enumerate(circuit.data) if inst.operation.name == "measure"]
-        first, second = measures[0], measures[1]
-        for index, inst in enumerate(circuit.data):
-            if index in (first, second):
-                other = circuit.data[second if index == first else first]
-                inst = inst.replace(clbits=other.clbits)
-            swapped_clbits.append(inst)
-        after_measure = _insert_rz(circuit, len(circuit.data), 0)
-        original = _syndrome_values(checked, circuit)
-        first_measure = min(_measure_positions(circuit).values())
-        breaking = next(
-            candidate
-            for candidate in (
-                _insert_rz(circuit, position, qubit)
-                for position in range(first_measure + 1)
-                for qubit in range(circuit.num_qubits)
-            )
-            if not np.allclose(_syndrome_values(checked, candidate), original, atol=1e-9)
-        )
-        for label, doped_circuit, message in (
-            ("registers", extra_qubit, "same registers"),
-            ("missing", missing, "missing"),
-            ("changed", changed, "neither"),
-            ("extra gate", extra_gate, "neither"),
-            ("classical bits", swapped_clbits, "neither"),
-            ("after measurement", after_measure, "after its measurement"),
-            ("breaks a check", breaking, "changes a check's syndrome"),
-        ):
-            with self.subTest(label), self.assertRaisesRegex(ValueError, message):
-                checked.box(doped_circuit=doped_circuit)
-
-    def test_box_accepts_exactly_preserving_rotations(self):
-        """Before measurement, a single added rotation is accepted iff it keeps every syndrome."""
-        checked = _checked_circuit()
-        circuit = checked.circuit
-        original = _syndrome_values(checked, circuit)
-        first_measure = min(_measure_positions(circuit).values())
-        accepted = rejected = 0
-        for position in range(first_measure + 1):
-            for qubit in range(circuit.num_qubits):
-                doped_circuit = _insert_rz(circuit, position, qubit)
-                preserved = np.allclose(
-                    _syndrome_values(checked, doped_circuit), original, atol=1e-9
-                )
-                with self.subTest(position=position, qubit=qubit):
-                    if preserved:
-                        checked.box(doped_circuit=doped_circuit)
-                        accepted += 1
-                    else:
-                        with self.assertRaisesRegex(ValueError, "changes a check's syndrome"):
-                            checked.box(doped_circuit=doped_circuit)
-                        rejected += 1
-        self.assertGreater(accepted, 0)
-        self.assertGreater(rejected, 0)
+        unboxed_measures, _ = checked.dope(box=True, box_options={"enable_measures": False})
+        self.assertIn("measure", unboxed_measures.count_ops())
+        with self.assertRaisesRegex(ValueError, "payload_layers does not describe"):
+            checked.dope(box=True, payload_layers=[[(0, 1)]])
+        for arguments in ({"payload_layers": [[(0, 1)]]}, {"box_options": {}}):
+            with self.subTest(**arguments), self.assertRaisesRegex(ValueError, "require box=True"):
+                checked.dope(**arguments)
 
     def test_template_preserves_code(self):
         """A parametrized template keeps every syndrome at any angles, for every wires rule."""
