@@ -56,6 +56,9 @@ pub struct CheckPicker {
     /// Available qubit measurements (to extend the check via virtual zs)
     /// and available input stabilizer group
     logical_data: LogicalData,
+    /// Input stabilizers whose forward images define the logical errors counted by the
+    /// metric. `None` means the input stabilizer group in `logical_data` plays that role too.
+    logical_stabilizers: Option<StabilizerGroup>,
     /// Already existing check qubits & their final measurements components (if any)
     check_data: CheckData,
     /// CheckEvaluator structure to evaluate check performances
@@ -69,7 +72,24 @@ pub struct CheckPicker {
 #[pymethods]
 /// Public interface
 impl CheckPicker {
+    /// Builds a picker for `circuit`.
+    ///
+    /// Pauli labels are little-endian strings over `nqubits` qubits (shorter labels are
+    /// padded with identities). `stabilizer_group` lists Paulis that stabilize the circuit's
+    /// input state: a check is valid iff its back-propagated product lies in that group,
+    /// possibly times Z on `measured_qubits` at the output. `logical_stabilizers` optionally
+    /// names a different set of input stabilizers whose forward images define the logical
+    /// errors the metric counts; by default `stabilizer_group` is used for both roles.
     #[new]
+    #[pyo3(signature = (
+        circuit,
+        nqubits=None,
+        measured_qubits=None,
+        stabilizer_group=None,
+        check_qubits=None,
+        virtual_zs=None,
+        logical_stabilizers=None,
+    ))]
     pub fn new(
         circuit: Vec<(String, Vec<usize>)>,
         nqubits: Option<usize>,
@@ -77,19 +97,23 @@ impl CheckPicker {
         stabilizer_group: Option<Vec<String>>,
         check_qubits: Option<Vec<usize>>,
         virtual_zs: Option<Vec<Vec<usize>>>,
+        logical_stabilizers: Option<Vec<String>>,
     ) -> Self {
         let mut circuit = CliffordCircuit::from_vec(circuit);
         if let Some(nqubits) = nqubits {
             circuit.nqbits = nqubits;
         }
         let measured_qubits = measured_qubits.unwrap_or_default();
-        let stabilizer_group = StabilizerGroup::new(
-            stabilizer_group
-                .unwrap_or_default()
-                .into_iter()
-                .map(|s| string_to_pauli(&s, circuit.nqbits))
-                .collect(),
-        );
+        let to_group = |labels: Vec<String>| {
+            StabilizerGroup::new(
+                labels
+                    .into_iter()
+                    .map(|s| string_to_pauli(&s, circuit.nqbits))
+                    .collect(),
+            )
+        };
+        let stabilizer_group = to_group(stabilizer_group.unwrap_or_default());
+        let logical_stabilizers = logical_stabilizers.map(to_group);
         let check_qubits = check_qubits.unwrap_or_default();
         let virtual_zs = virtual_zs.unwrap_or_default();
         assert!(
@@ -99,6 +123,7 @@ impl CheckPicker {
         Self {
             circuit,
             logical_data: (measured_qubits, stabilizer_group),
+            logical_stabilizers,
             check_data: (check_qubits, virtual_zs),
             check_evaluator: None,
             check_group: None,
@@ -128,7 +153,9 @@ impl CheckPicker {
             self.circuit.clone(),
             metric._data.clone(),
             noise_models.into_iter().map(|n| n.model).collect(),
-            self.logical_data.1.clone(),
+            self.logical_stabilizers
+                .clone()
+                .unwrap_or_else(|| self.logical_data.1.clone()),
             self.logical_data.0.clone(),
             self.check_data.0.clone(),
             self.check_data.1.clone(),
@@ -284,6 +311,7 @@ impl CheckPicker {
         Self {
             circuit: checked_circuit,
             logical_data,
+            logical_stabilizers: self.logical_stabilizers.clone(),
             check_data,
             check_evaluator: None,
             check_group: None,

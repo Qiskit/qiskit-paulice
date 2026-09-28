@@ -48,6 +48,44 @@ def validate_terminal_measurements(circuit: QuantumCircuit) -> None:
                 measured.add(qubit)
 
 
+def normalize_stabilizers(
+    stabilizers: None | list[str] | list[Pauli] | str, num_qubits: int
+) -> list[str]:
+    """Turn a stabilizer specification into little-endian Pauli labels for the Rust picker.
+
+    Args:
+        stabilizers: ``None`` (no stabilizers), ``"all"`` (Z on each of the ``num_qubits``
+            qubits, the stabilizer group of the all-zeros state), a list of little-endian
+            labels, or a list of :class:`~qiskit.quantum_info.Pauli`. A Pauli's phase is
+            dropped, since neither group membership nor commutation depends on it. The Rust
+            side pads labels shorter than its register with identities.
+        num_qubits: Number of qubits ``"all"`` expands over.
+
+    Raises:
+        ValueError: ``stabilizers`` is a string other than ``"all"``.
+    """
+    if stabilizers is None:
+        return []
+    if isinstance(stabilizers, str):
+        if stabilizers != "all":
+            raise ValueError(f"Unexpected stabilizers value {stabilizers!r}; expected 'all'")
+        return ["I" * q + "Z" + "I" * (num_qubits - q - 1) for q in range(num_qubits)]
+    return [
+        Pauli((s.z, s.x)).to_label()[::-1] if isinstance(s, Pauli) else s for s in stabilizers
+    ]
+
+
+def normalize_measured_qubits(measured_qubits: None | list[int] | str, num_qubits: int) -> list[int]:
+    """Expand ``"all"`` to every qubit index and ``None`` to no qubits."""
+    if measured_qubits is None:
+        return []
+    if isinstance(measured_qubits, str):
+        if measured_qubits != "all":
+            raise ValueError(f"Unexpected measured_qubits value {measured_qubits!r}; expected 'all'")
+        return list(range(num_qubits))
+    return list(measured_qubits)
+
+
 def build_check_picker(
     circuit: QuantumCircuit,
     metric: Metric,
@@ -56,30 +94,19 @@ def build_check_picker(
     measured_qubits: None | list[int] | str = None,
     check_qubits=None,
     virtual_zs=None,
+    logical_stabilizers: None | list[str] | list[Pauli] = None,
 ):
-    """Builds a rust CheckPicker object for a gicen qiskit circuit & some parameters
+    """Builds a rust CheckPicker object for a given qiskit circuit & some parameters.
+
+    ``stabilizers`` are input stabilizers a check may back-propagate to; ``logical_stabilizers``
+    optionally names the input stabilizers whose forward images the metric protects instead
+    (see :class:`.CheckPickerStation`).
     """
-    measured_qubits = measured_qubits or []
-    stabilizers = stabilizers or []
     noise_models = noise_models or []
-    if isinstance(measured_qubits, str):
-        if measured_qubits == "all":
-            measured_qubits = list(set(range(circuit.num_qubits)))
-        else:
-            raise ValueError("Unexpected measured_qubits type")
     assert isinstance(metric, Metric), "metric should be a Metric instance"
-    if isinstance(stabilizers, str):
-        if stabilizers == "all":
-            stabilizers = [
-                "".join("Z" if q == i else "I" for i in range(circuit.num_qubits))
-                for q in set(range(circuit.num_qubits))
-            ]
-        else:
-            raise ValueError("Unexpected stabilizers type")
-    if stabilizers and isinstance(stabilizers[0], Pauli):
-        if any(s.phase for s in stabilizers):
-            raise ValueError("Pauli with phase not supported")
-        stabilizers = [s.to_label()[::-1] for s in stabilizers]
+    measured_qubits = normalize_measured_qubits(measured_qubits, circuit.num_qubits)
+    stabilizers = normalize_stabilizers(stabilizers, circuit.num_qubits)
+    logical = normalize_stabilizers(logical_stabilizers, circuit.num_qubits) or None
     if check_qubits is None:
         check_qubits = []
     if virtual_zs is None:
@@ -94,6 +121,7 @@ def build_check_picker(
         stabilizers,
         check_qubits,
         virtual_zs,
+        logical,
     )
     picker.set_evaluation_data(noise_models, metric, circuit.num_qubits)
     return picker

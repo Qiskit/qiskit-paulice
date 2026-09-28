@@ -526,6 +526,29 @@ class TestEstimateFaultRates(unittest.TestCase):
         ):
             self.assertLess(abs(rate - exact), 5 * stderr + 1e-6)
 
+    def test_without_payload_measurements_logical_means_state_changing(self):
+        """Checks found for stabilizers leave the payload unmeasured; a logical error is then
+        any accepted error that changes the state, and the harmless and logical rates partition
+        the accepted non-identity errors (checked against the total error probability)."""
+        bare = QuantumCircuit(3)
+        for _ in range(2):
+            bare.h(0)
+            bare.cx(0, 1)
+            bare.cx(1, 2)
+            bare.s(0)
+            bare.s(2)
+        noise = NoiseModel(gate_noise=1e-2)
+        checked = add_pauli_checks(bare, [1], noise, stabilizers="all", seed=0)[-1]
+        self.assertEqual(checked.check_support, ((3,),))
+        estimate = checked.estimate_fault_rates(noise, shots=100_000, seed=3)
+        self.assertGreater(estimate.logical_error_rate, 0)
+        self.assertLessEqual(estimate.harmless_rate + estimate.logical_error_rate, 1)
+        # Readout noise on the ancilla is supported without payload measurements.
+        with_readout = checked.estimate_fault_rates(
+            NoiseModel(gate_noise=1e-2, readout_noise=1e-2), shots=20_000, seed=3
+        )
+        self.assertGreater(with_readout.check_trigger_rates[0], estimate.check_trigger_rates[0])
+
     def test_readout_only(self):
         """Readout noise affects acceptance but is never a harmless state fault."""
         checked = self._checked()

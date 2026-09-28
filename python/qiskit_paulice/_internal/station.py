@@ -19,10 +19,33 @@ from qiskit.quantum_info import Pauli
 from ._internal_r import CheckPicker, NoiseModel
 from ._internal_r import PyMetric as Metric
 from .conversion import convert_to_qiskit_circuit, convert_to_rustiq_circuit
+from .utils import normalize_measured_qubits, normalize_stabilizers
 
 
 class CheckPickerStation:
-    """Docstring for CheckPickerStation
+    """Python-side driver of the Rust ``CheckPicker`` for one check-picking run.
+
+    Exactly one of ``stabilizers`` and ``measured_qubits`` should be given; they define what
+    a valid check is and what the metric protects.
+
+    Args:
+        circuit: Payload circuit, without measurements.
+        n_checks_to_add: Number of ancilla qubits to reserve after the payload qubits.
+        metric: Cost metric to minimize.
+        noise_models: Rust noise models used by the metric.
+        stabilizers: Paulis stabilizing the circuit's input state, as ``"all"`` (Z on every
+            qubit, the stabilizer group of the all-zeros input) or a list of little-endian
+            labels or :class:`~qiskit.quantum_info.Pauli` (phase ignored). A check is valid
+            iff its back-propagated product lies in the group they generate; its syndrome is
+            the ancilla bit alone. Unless ``logical_stabilizers`` is given, the metric counts
+            an error as logical iff it anticommutes with the forward image of one of them.
+        measured_qubits: Qubits measured in the Z basis at the end of the circuit, or
+            ``"all"``. A check is valid iff its product, times Z on some measured qubits,
+            propagates to the identity; those qubits join the syndrome. The metric counts an
+            error as logical iff it flips a measured bit.
+        logical_stabilizers: Input stabilizers whose forward images the metric protects,
+            instead of ``stabilizers``. Same formats as ``stabilizers``; only meaningful with
+            ``stabilizers`` and not ``measured_qubits``.
     """
 
     def __init__(
@@ -33,30 +56,13 @@ class CheckPickerStation:
         noise_models: None | list[NoiseModel] = None,
         stabilizers: None | list[str] | list[Pauli] | str = None,
         measured_qubits: None | list[int] | str = None,
+        logical_stabilizers: None | list[str] | list[Pauli] = None,
     ):
-        measured_qubits = measured_qubits or []
-        stabilizers = stabilizers or []
         noise_models = noise_models or []
-        if isinstance(measured_qubits, str):
-            if measured_qubits == "all":
-                measured_qubits = list(set(range(circuit.num_qubits)))
-            else:
-                raise ValueError("Unexpected measured_qubits type")
         assert isinstance(metric, Metric), "metric should be a Metric instance"
-        if isinstance(stabilizers, str):
-            if stabilizers == "all":
-                stabilizers = [
-                    "".join(
-                        "Z" if q == i else "I" for i in range(circuit.num_qubits + n_checks_to_add)
-                    )
-                    for q in set(range(circuit.num_qubits))
-                ]
-            else:
-                raise ValueError("Unexpected stabilizers type")
-        if stabilizers and isinstance(stabilizers[0], Pauli):
-            if any(s.phase for s in stabilizers):
-                raise ValueError("Pauli with phase not supported")
-            stabilizers = [s.to_label()[::-1] for s in stabilizers]
+        measured_qubits = normalize_measured_qubits(measured_qubits, circuit.num_qubits)
+        stabilizers = normalize_stabilizers(stabilizers, circuit.num_qubits)
+        logical = normalize_stabilizers(logical_stabilizers, circuit.num_qubits) or None
         rustiq_circuit, _ = convert_to_rustiq_circuit(circuit)
         self.check_picker = CheckPicker(
             rustiq_circuit,
@@ -65,6 +71,7 @@ class CheckPickerStation:
             stabilizers,
             None,
             None,
+            logical,
         )
         self.noise_models = noise_models
         self.metric = metric

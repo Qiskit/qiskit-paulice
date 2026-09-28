@@ -112,6 +112,7 @@ $\bigoplus_{i=1} b_i = 0$. A sample is kept if each check produces $0$ for its p
 
 - Automatic noise model creation from backend benchmark data
 - Rust accelerated check finding
+- Find checks for a circuit's terminal measurements or for stabilizers of the state it prepares
 - 3 built-in algorithms for check finding
 - Evaluate efficacy of checks based on sampling overhead of postselected inverse noise channel or
   logical error rate based on Monte Carlo sampling of noisy state

@@ -85,6 +85,7 @@ Software features
 
 - Automatic noise model creation from backend benchmark data
 - Rust-accelerated check finding
+- Find checks for a circuit's terminal measurements or for stabilizers of the state it prepares
 - Three built-in algorithms for check finding
 - Evaluate efficacy of checks based on sampling overhead of postselected inverse noise channel or
   logical error rate based on Monte Carlo sampling of noisy state

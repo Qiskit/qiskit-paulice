@@ -14,9 +14,21 @@ from numbers import Real
 
 import numpy as np
 from qiskit import QuantumCircuit
-from qiskit.quantum_info import Pauli
+from qiskit.circuit.library import CXGate, CZGate, HGate, SdgGate, SGate, SXdgGate, SXGate
+from qiskit.quantum_info import Clifford, Pauli
 
 from ._internal_r import NoiseModel as RustNoiseModel
+
+RUSTIQ_GATES = {
+    "CX": CXGate(),
+    "CZ": CZGate(),
+    "H": HGate(),
+    "S": SGate(),
+    "Sd": SdgGate(),
+    "SqrtX": SXGate(),
+    "SqrtXd": SXdgGate(),
+}
+"""Qiskit gate for each rustiq gate name emitted by :func:`convert_to_rustiq_circuit`."""
 
 _NAMES_CONVERSION = {
     "cx": "CX",
@@ -101,6 +113,22 @@ def convert_to_rustiq_circuit(circuit):
         else:
             emit((name, qbits), inst_idx)
     return rustiq_circuit, qiskit_inst_indices
+
+
+def clifford_of(circuit: QuantumCircuit) -> Clifford:
+    """The Clifford ``circuit`` implements, ignoring measurements and barriers.
+
+    Goes through :func:`convert_to_rustiq_circuit`, so every gate it accepts is supported,
+    including ``rz`` by multiples of pi/2.
+
+    Raises:
+        ValueError: ``circuit`` contains a non-Clifford instruction.
+    """
+    gates, _ = convert_to_rustiq_circuit(circuit)
+    clifford_circuit = QuantumCircuit(circuit.num_qubits)
+    for name, qubits in gates:
+        clifford_circuit.append(RUSTIQ_GATES[name], qubits)
+    return Clifford(clifford_circuit)
 
 
 def convert_to_qiskit_circuit(circuit, nqbits):

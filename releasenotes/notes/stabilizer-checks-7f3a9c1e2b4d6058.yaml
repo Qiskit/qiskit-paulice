@@ -1,0 +1,21 @@
+---
+features:
+  - |
+    :func:`~qiskit_paulice.checks.add_pauli_checks` can now find checks for stabilizers of the
+    state a circuit prepares instead of for its terminal measurements, via the new ``stabilizers``
+    argument. Pass ``"all"`` to protect the whole state, or a sequence of
+    :class:`~qiskit.quantum_info.Pauli` or labels that stabilize the prepared state. Such checks
+    read their syndrome from the ancilla alone, so they remain valid whatever basis the payload
+    is measured in afterwards, and the cost counts an error as logical only if it flips one of
+    the given stabilizers. The input circuit must then contain no measurements; a circuit with
+    neither measurements nor ``stabilizers`` now raises a ``ValueError`` instead of an
+    ``AssertionError``.
+  - |
+    :meth:`~qiskit_paulice.checked_circuit.CheckedCircuit.estimate_fault_rates` reports, for a
+    circuit that measures no payload qubit, the fraction of accepted shots whose error changes
+    the prepared state as its logical error rate.
+fixes:
+  - |
+    Stabilizers passed to the internal check picker as :class:`~qiskit.quantum_info.Pauli`
+    objects, or as labels narrower than the picker's register, were silently misread. Their
+    signs are now ignored instead of rejected, since a check's phase is fixed from the circuit.
