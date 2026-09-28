@@ -122,6 +122,90 @@ def dope_circuit(
     return doped, chosen
 
 
+def validate_doped_circuit(
+    circuit: QuantumCircuit,
+    check_support: tuple[tuple[int, ...], ...],
+    doped_circuit: QuantumCircuit,
+) -> None:
+    """Check that ``doped_circuit`` is ``circuit`` with check-preserving ``RZ`` rotations added.
+
+    ``doped_circuit`` must have the same registers as ``circuit`` and contain every instruction
+    of ``circuit``, in order, with the same qubits and classical bits. Every other instruction
+    must be an :class:`~qiskit.circuit.library.RZGate`, of any angle or an unbound parameter,
+    placed before its qubit's measurement and on a wire where ``Z`` commutes with every
+    check's syndrome, so that every syndrome is unchanged.
+
+    Args:
+        circuit: Clifford circuit, with barriers and terminal measurements allowed.
+        check_support: For each check, the qubits whose final Z measurements it multiplies.
+        doped_circuit: The circuit to check.
+
+    Raises:
+        ValueError: ``doped_circuit`` breaks any of these requirements, or ``circuit`` has a
+            non-Clifford instruction or uses a qubit after its measurement.
+    """
+    if doped_circuit.qregs != circuit.qregs or doped_circuit.cregs != circuit.cregs:
+        raise ValueError("doped_circuit must have the same registers as the checked circuit.")
+
+    def bits(qc: QuantumCircuit, inst) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        return (
+            tuple(qc.find_bit(q).index for q in inst.qubits),
+            tuple(qc.find_bit(c).index for c in inst.clbits),
+        )
+
+    # Match the checked circuit's instructions in order; each unmatched one is an insertion,
+    # labelled by the last matched gate on its qubit.
+    original = circuit.data
+    inserted: list[tuple[int, Wire]] = []
+    last_gate: dict[int, int] = {}
+    measured: set[int] = set()
+    matched = 0
+    for position, inst in enumerate(doped_circuit.data):
+        qubits, clbits = bits(doped_circuit, inst)
+        if (
+            matched < len(original)
+            and inst.operation == original[matched].operation
+            and (qubits, clbits) == bits(circuit, original[matched])
+        ):
+            name = inst.operation.name
+            if name == "measure":
+                measured.update(qubits)
+            elif name != "barrier":
+                last_gate.update(dict.fromkeys(qubits, matched))
+            matched += 1
+        elif inst.operation.name != "rz":
+            raise ValueError(
+                f"doped_circuit instruction {position} ({inst.operation.name!r}) is neither the "
+                "checked circuit's next instruction nor an added RZ rotation."
+            )
+        elif qubits[0] in measured:
+            raise ValueError(
+                f"doped_circuit instruction {position} is an RZ rotation on qubit {qubits[0]} "
+                "after its measurement."
+            )
+        else:
+            inserted.append((position, Wire(qubits[0], last_gate.get(qubits[0]))))
+    if matched < len(original):
+        raise ValueError(
+            f"doped_circuit is missing the checked circuit's instruction {matched} "
+            f"({original[matched].operation.name!r})."
+        )
+
+    candidates, output_paulis, _ = _sweep_wire_segments(
+        circuit, set(range(circuit.num_qubits)), "all"
+    )
+    preserving = np.ones(len(candidates), dtype=bool)
+    for support in check_support:
+        preserving &= output_paulis.x[:, list(support)].sum(axis=1) % 2 == 0
+    allowed = {wire for wire, keep in zip(candidates, preserving, strict=True) if keep}
+    for position, wire in inserted:
+        if wire not in allowed:
+            raise ValueError(
+                f"doped_circuit instruction {position} is an RZ rotation on qubit "
+                f"{wire.qubit} that changes a check's syndrome."
+            )
+
+
 def _sweep_wire_segments(
     circuit: QuantumCircuit, site_qubits: set[int], wires: str
 ) -> tuple[list[Wire], PauliList, Clifford]:

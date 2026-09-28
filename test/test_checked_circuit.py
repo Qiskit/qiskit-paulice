@@ -269,7 +269,7 @@ class TestIsolatedCheckLayers(unittest.TestCase):
 
     def test_same_circuit(self):
         """Isolating check gates doesn't change the unitary the circuit implements."""
-        stripped = self.checked._stratify(None)
+        stripped = self.checked._stratify(self.checked.circuit, None)
         self.assertEqual(_gate_counts(self.checked.circuit), _gate_counts(stripped))
         original = RemoveBarriers()(self.checked.circuit.remove_final_measurements(inplace=False))
         restratified = RemoveBarriers()(stripped.remove_final_measurements(inplace=False))
