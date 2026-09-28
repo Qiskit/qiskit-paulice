@@ -31,9 +31,9 @@ def dope_circuit(
     angle: float | None,
     seed: int | np.random.Generator | None,
 ) -> tuple[QuantumCircuit, list[Wire]]:
-    """Insert ``RZ`` rotations into a Clifford circuit without disturbing its Pauli checks.
+    """Insert ``RZ`` rotations that commute with all Pauli check stabilizers into a Clifford circuit.
 
-    The candidates are the wires selected by ``wires`` on non-check qubits. A candidate is
+    Candidate doping locations are the wires selected by ``wires`` on non-check qubits. A candidate is
     kept only if its rotation leaves every check's syndrome unchanged. Redundant rotations
     are then removed: those that only add a global phase or do not change Z-basis
     measurement outcomes, and those that merge into an earlier rotation about the same
