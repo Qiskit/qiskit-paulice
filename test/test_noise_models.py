@@ -708,12 +708,13 @@ class TestUserFacingConvention(unittest.TestCase):
         self.assertAlmostEqual(g_zx, 1.0, places=12)
 
     def test_gate_wise_rejects_non_string_generator(self):
-        """Pauli objects and tuples are rejected; only 2-character strings are accepted,
-        matching PauliLindbladMap's sparse-form contract."""
-        noise = NoiseModel(gate_noise={(0, 1): [(("X", "Z"), 0.1)]})
-        with self.assertRaises(ValueError) as cm:
-            convert_gate_wise_noise(noise.gate_noise)
-        self.assertIn("2-character", str(cm.exception))
+        """Tuples and non-Pauli characters are rejected; only 2-character Pauli strings are
+        accepted, matching PauliLindbladMap's sparse-form contract."""
+        for generator in (("X", "Z"), "XQ"):
+            noise = NoiseModel(gate_noise={(0, 1): [(generator, 0.1)]})
+            with self.assertRaises(ValueError) as cm:
+                convert_gate_wise_noise(noise.gate_noise)
+            self.assertIn("2-character", str(cm.exception))
 
     def test_layered_non_canonical_edge_is_canonicalized(self):
         """A layer key with edges in ``(max, min)`` order matches the same circuit gates

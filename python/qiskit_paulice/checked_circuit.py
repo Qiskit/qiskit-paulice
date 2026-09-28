@@ -111,6 +111,10 @@ class CheckedCircuit:
             together to give that check's syndrome bit.
         cost: The value of the cost function with respect to the checks in ``circuit``
         cost_metric: The metric used to evaluate check quality (``gamma`` or ``LER``)
+
+    Raises:
+        ValueError: ``circuit`` has a qubit with an instruction other than a barrier after its
+            measurement.
     """
 
     circuit: QuantumCircuit
@@ -121,7 +125,8 @@ class CheckedCircuit:
     cost_metric: str | None = None
 
     def __post_init__(self) -> None:
-        """Coerce mutable sequence inputs to tuples."""
+        """Reject non-terminal measurements and coerce mutable sequence inputs to tuples."""
+        _validate_terminal_measurements(self.circuit)
         object.__setattr__(self, "target_qubits", tuple(self.target_qubits))
         object.__setattr__(self, "check_qubits", tuple(self.check_qubits))
         object.__setattr__(
@@ -581,20 +586,8 @@ def _fault_channels(
         whole circuit's Clifford for pushing images back to the input.
 
     Raises:
-        ValueError: on a non-Clifford instruction, a non-terminal measurement, or a rate
-            that is negative or not finite.
+        ValueError: on a non-Clifford instruction, or a rate that is negative or not finite.
     """
-    touched: set[int] = set()
-    for inst in reversed(circuit.data):
-        qargs = [circuit.find_bit(qubit).index for qubit in inst.qubits]
-        if inst.operation.name == "measure":
-            if qargs[0] in touched:
-                raise ValueError(
-                    f"Qubit {qargs[0]} is used after its measurement; only terminal "
-                    "measurements are supported."
-                )
-        elif inst.operation.name != "barrier":
-            touched.update(qargs)
     try:
         gates, _ = _convert_to_rustiq_circuit(circuit)
     except ValueError as exc:

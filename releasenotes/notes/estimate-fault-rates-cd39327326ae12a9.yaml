@@ -1,5 +1,5 @@
 ---
 features:
   - |
-    Added the new :meth:`qiskit_paulice.CheckedCircuit.estimate_fault_rates` method for
+    Added the new :meth:`qiskit_paulice.checked_circuit.CheckedCircuit.estimate_fault_rates` method for
     calculating fault rate statistics via Monte Carlo sampling.

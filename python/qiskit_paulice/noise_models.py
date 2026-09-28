@@ -23,11 +23,10 @@ from qiskit.quantum_info import Pauli, PauliLindbladMap
 
 # Type aliases for gate noise specifications
 UniformGateNoise = float
-"""A depolarizing probability applied uniformly to all 2-qubit gates.
+"""An average gate infidelity for every 2-qubit gate.
 
-This probability will be equally distributed among the ``15`` non-identity
-Paulis in the 2-qubit Pauli basis to form the depolarizing channel. This noise channel
-will be applied **after** each entangling gate.
+A depolarizing channel is applied after each 2-qubit gate. Each of the ``15`` non-identity
+2-qubit Paulis occurs with the same probability.
 """
 
 LayeredGateNoise = dict[tuple[tuple[int, int], ...], list[tuple[Pauli | str, float]]]
@@ -63,10 +62,10 @@ class NoiseModel:
     gate_noise: GateNoise | None = None
     """Errors that occur during 2-qubit gate operations. Can be:
 
-       - :class:`.UniformNoise`: Same error probability for all gates. The error probability is
-         equally distributed to each Pauli basis represented in the channel.
-       - :class:`.LayeredNoise`: Pauli-Lindblad noise channel per unique entangling layer
-       - :class:`.GateWiseNoise`: Pauli-Lindblad noise channel per unique entangling edge
+       - :data:`.UniformGateNoise`: The same depolarizing channel after every gate, with every
+         non-identity Pauli equally likely.
+       - :data:`.LayeredGateNoise`: Pauli-Lindblad noise channel per unique entangling layer
+       - :data:`.GateWiseNoise`: Pauli-Lindblad noise channel per unique entangling edge
     """
 
     readout_noise: float | None = None
@@ -76,7 +75,7 @@ class NoiseModel:
     """Qubit decay rate during idle time. Total error probability is given as ``1 - exp(-t / idling_noise)``.
 
     Not currently supported: both :func:`~qiskit_paulice.checks.add_pauli_checks` and
-    :meth:`~qiskit_paulice.CheckedCircuit.estimate_fault_rates` raise if this is set."""
+    :meth:`~qiskit_paulice.checked_circuit.CheckedCircuit.estimate_fault_rates` raise if this is set."""
 
     @classmethod
     def from_backend(
@@ -88,7 +87,7 @@ class NoiseModel:
     ) -> NoiseModel:
         """Instantiate a :class:`.NoiseModel` from backend calibration data.
 
-        Edge keys in the resulting :class:`.GateWiseNoise` dict use **virtual** qubit indices
+        Edge keys in the resulting :data:`.GateWiseNoise` dict use **virtual** qubit indices
         (positions in ``layout``). If the input circuit has a layout that maps virtual to physical
         consistently with ``layout``, the keys also serve as physical indices.
 
@@ -101,16 +100,15 @@ class NoiseModel:
             layout: Physical qubit indices on the backend to include in the noise model. The order
                 defines the virtual qubit indexing (virtual qubit 0 maps to ``layout[0]``, etc.).
             uniform_gate_noise: If ``True``, the ``gate_noise`` field in the output :class:`.NoiseModel`
-                will be a :class:`.UniformGateNoise` and the error probability is assumed to be
-                distributed uniformly among the ``15`` non-identity Pauli bases to form a uniform
-                depolarizing channel which will affect all entangling gates equally.
-                If ``False``, ``gate_noise`` will be a :class:`.GateWiseNoise` instance where each
+                will be a :data:`.UniformGateNoise`: the mean reported error over all edges, applied as
+                the same depolarizing channel after every entangling gate.
+                If ``False``, ``gate_noise`` will be a :data:`.GateWiseNoise` instance where each
                 edge is associated with a custom noise channel based on backend calibration data.
-            pauli_bases: For :class:`.GateWiseNoise` models, ``pauli_bases`` are the bases over which
+            pauli_bases: For :data:`.GateWiseNoise` models, ``pauli_bases`` are the bases over which
                 the error probability reported from the backend will be distributed. Each basis is a
                 2-character Pauli string paired left-to-right with the edge tuple, so ``"XZ"`` on
                 edge ``(a, b)`` places ``X`` on ``a`` and ``Z`` on ``b``. The default behavior is
-                to use the full 2Q Pauli basis excluding ``"II"``. For :class:`UniformNoise`, the
+                to use the full 2Q Pauli basis excluding ``"II"``. For :data:`.UniformGateNoise`, the
                 full basis is assumed, and this argument is ignored.
 
         Returns:
@@ -216,9 +214,9 @@ class NoiseModel:
         rates.
 
         Args:
-            layer_noise: A sequence of :class:`PauliLindbladMap` objects, where each map represents
+            layer_noise: A sequence of :class:`~qiskit.quantum_info.PauliLindbladMap` objects, where each map represents
                 the noise channel for one unique entangling layer in the circuit.
-            readout_noise: Optional :class:`PauliLindbladMap` containing Pauli X generators on each
+            readout_noise: Optional :class:`~qiskit.quantum_info.PauliLindbladMap` containing Pauli X generators on each
                 qubit for readout errors.
 
         Returns:
