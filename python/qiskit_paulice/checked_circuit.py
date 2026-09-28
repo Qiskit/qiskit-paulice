@@ -34,6 +34,7 @@ from ._internal.conversion import convert_noise_model as _convert_noise_model
 from ._internal.conversion import convert_to_rustiq_circuit as _convert_to_rustiq_circuit
 from ._internal.doping import dope_circuit as _dope_circuit
 from ._internal.utils import build_check_picker as _build_check_picker
+from ._internal.utils import validate_terminal_measurements as _validate_terminal_measurements
 from .noise_models import NoiseModel
 from .wire import Wire
 
