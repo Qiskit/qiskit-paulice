@@ -82,8 +82,6 @@ def add_pauli_checks(
     convergence of the cost function as more checks are added, as one may see convergence of the
     cost using fewer checks.
 
-    For details on finding effective spacetime Pauli checks, see `Supplemental Sec. II-VI of Martiel, Javadi <https://arxiv.org/abs/2504.15725>`_.
-
     Args:
         circuit: The Clifford circuit to dress with spacetime Pauli checks. Unless
             ``stabilizers`` is given, the circuit must be terminated with a measurement on at
@@ -202,6 +200,11 @@ def add_pauli_checks(
             measured.measure(range(3), meas)
             checked = replace(checked, circuit=measured)
             accept = checked.get_postselection_method()  # takes a bitstring of ``measured``
+
+    References:
+        S. Martiel and A. Javadi-Abhari, *Low-overhead error detection with spacetime codes*,
+        `arXiv:2504.15725 <https://arxiv.org/abs/2504.15725>`_. Supplementary Sections II to VI
+        describe how effective checks are found.
     """
     # Set global random seed if provided for full reproducibility
     if seed is not None:

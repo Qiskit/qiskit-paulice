@@ -331,8 +331,6 @@ class CheckedCircuit:
     ) -> tuple[QuantumCircuit, tuple[Wire, ...]]:
         r"""Dope ``self.circuit`` with :class:`~qiskit.circuit.library.RZGate` rotations that commute with check stabilizers.
 
-        See `arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`_ for more details.
-
         Args:
             num_sites: Number of :class:`~qiskit.circuit.library.RZGate` rotations to place in
                 the circuit. ``None`` uses every possible location.
@@ -391,6 +389,10 @@ class CheckedCircuit:
                 # dope[0] follows the first H gate, and dope[1] follows the second.
 
                 bound = doped_circuit.assign_parameters([np.pi / 4, np.pi / 8])
+
+        References:
+            S. Martiel et al., *Sampling hard circuits with verifiably high fidelity*,
+            `arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`_.
         """
         if not box and (payload_layers is not None or box_options is not None):
             raise ValueError("payload_layers and box_options require box=True.")
