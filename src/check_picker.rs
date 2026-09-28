@@ -218,7 +218,7 @@ impl CheckPicker {
         Some(self.commit_check(check, vzs))
     }
 
-    /// Generates a few checks and their costs and commmits the best one.
+    /// Generates a few checks and their costs and commits the best one.
     pub fn find_good_checks(&self) -> Option<(Self, f64)> {
         assert!(
             self.check_decoder.is_some(),
@@ -259,7 +259,7 @@ impl CheckPicker {
             .collect()
     }
 
-    /// Returns the virtual CZs stored for each of the currentl checks
+    /// Returns the virtual CZs stored for each of the current checks
     pub fn get_virtual_zs(&self) -> Vec<Vec<usize>> {
         self.check_data.1.clone()
     }
