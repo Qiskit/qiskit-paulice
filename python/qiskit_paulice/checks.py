@@ -29,8 +29,8 @@ from qiskit.transpiler.passes import BasisTranslator, UnrollCustomDefinitions
 from ._internal import Metric as _Metric
 from ._internal import NoiseModel as _NoiseModel
 from ._internal import pick_checks as _pick_checks
-from ._internal.conversion import clifford_of as _clifford_of
 from ._internal.conversion import convert_noise_model as _convert_noise_model
+from ._internal.conversion import convert_stabilizers as _convert_stabilizers
 from ._internal.utils import validate_terminal_measurements as _validate_terminal_measurements
 from .checked_circuit import CheckedCircuit
 from .noise_models import NoiseModel
@@ -51,17 +51,17 @@ def add_pauli_checks(
 ):
     r"""Add spacetime Pauli checks to a Clifford circuit.
 
-    Checks are found either for the circuit's terminal measurements or, when ``stabilizers``
-    is given, for stabilizers of the state the circuit prepares:
+    Checks are found for the circuit's terminal measurements or, when ``stabilizers`` is given,
+    for stabilizers of the state the circuit prepares:
 
     - **Measurements** (``stabilizers=None``): ``circuit`` ends with Z-basis measurements. A
-      check is valid if its spacetime Pauli product, times ``Z`` on some measured qubits,
-      propagates to the identity. Its syndrome bit is the parity of the check ancilla and
-      those payload bits, listed in :attr:`~qiskit_paulice.checked_circuit.CheckedCircuit.check_support`.
-      The ``cost`` counts an error as logical if it flips a measured bit. The checks are only
-      valid for this measurement basis.
+      check is valid if its forward-propagated image is diagonal on the measured qubits, so its
+      syndrome bit is the parity of the check ancilla and the payload bits listed in
+      :attr:`~qiskit_paulice.checked_circuit.CheckedCircuit.check_support`. The ``cost`` counts
+      an error as logical if it flips a measured bit. The checks are only valid for this
+      measurement basis.
     - **Stabilizers** (``stabilizers`` given): ``circuit`` contains no measurements. A check is
-      valid if its product back-propagates to a stabilizer of the input state
+      valid if it back-propagates to a stabilizer of the input state
       :math:`|0\ldots0\rangle`, so its syndrome is the ancilla bit alone and it stays valid
       whatever is measured afterwards. The ``cost`` counts an error as logical if it flips one
       of the given stabilizers of the prepared state; with ``"all"`` that is any error that
@@ -133,10 +133,13 @@ def add_pauli_checks(
         stabilizers: Stabilizers of the state ``circuit`` prepares to find checks for, or ``None``
             to find checks for the circuit's terminal measurements. ``"all"`` protects the whole
             state. Otherwise a sequence of :class:`~qiskit.quantum_info.Pauli` or labels on the
-            qubits of ``circuit``, in Qiskit's qubit order; a sign is permitted and ignored. In
+            qubits of ``circuit`` in Qiskit convention, so the rightmost character of a label
+            acts on qubit ``0``; a sign is permitted and ignored. In
             ISA mode they must act as the identity on every qubit outside the payload. Each must
             stabilize the prepared state, i.e. propagate back through the circuit to a product of
-            ``Z``\ s (a ``ValueError`` is raised otherwise).
+            ``Z``\ s (a ``ValueError`` is raised otherwise). Since no payload qubit is measured
+            in this mode, ``readout_noise`` only affects the check ancillas and so never counts
+            toward the cost.
 
     Returns:
         A list of :class:`~qiskit_paulice.checked_circuit.CheckedCircuit` instances -- instances containing the bare circuit with
@@ -144,11 +147,61 @@ def add_pauli_checks(
         with checks on every target qubit, assuming a valid set of checks could be found.
 
     Raises:
-        ValueError: ``circuit`` has neither measurements nor ``stabilizers``, or both; a
-            stabilizer has the wrong width, acts outside the payload, or does not stabilize the
-            prepared state; a measurement is not terminal or targets a loose clbit; the noise
-            model, cost, target or ancilla qubits, or register names are invalid (see the
-            respective arguments).
+        ValueError: ``circuit`` has no entangling gate, so there is nothing for a check to
+            protect; a qubit has an instruction other than a barrier after its measurement; or
+            a measurement targets a clbit outside every classical register.
+        ValueError: ``circuit`` has neither terminal measurements nor ``stabilizers``, or has
+            both. The checks are anchored at exactly one of the two.
+        ValueError: An entry of ``stabilizers`` acts on a different number of qubits than
+            ``circuit``, is not a stabilizer of the prepared state (it does not propagate back
+            to a product of ``Z``\ s), or in ISA mode acts on a qubit outside the payload;
+            ``stabilizers`` is an empty sequence or a string other than ``"all"``.
+        ValueError: ``target_qubits`` are out of range, or in ISA mode are not payload qubits.
+        ValueError: In ISA mode ``ancilla_qubits`` is missing, has a different length than
+            ``target_qubits``, is out of range, repeats a qubit, or overlaps the payload.
+        ValueError: ``check_creg_name`` or ``check_qreg_name`` equals the other or the name of
+            a register ``circuit`` already has.
+        ValueError: ``cost`` is not ``"gamma"`` or ``"LER"``; ``noise_model`` is empty, sets
+            ``idling_noise``, or has a rate outside its allowed range (see
+            :class:`~qiskit_paulice.noise_models.NoiseModel`).
+
+    Example:
+        Checks for a circuit's measurements post-select its results directly:
+
+        .. code-block:: python
+
+            from qiskit import QuantumCircuit
+            from qiskit_paulice import NoiseModel, add_pauli_checks
+
+            circuit = QuantumCircuit(3)
+            circuit.h(0)
+            circuit.cx(0, 1)
+            circuit.s(1)
+            circuit.cx(1, 2)
+            circuit.measure_all()
+
+            checked = add_pauli_checks(circuit, [1], NoiseModel(gate_noise=1e-3))[-1]
+            accept = checked.get_postselection_method()  # takes a bitstring of ``checked.circuit``
+
+        Checks for stabilizers leave the payload unmeasured. Measure it however you like, then
+        rebind the checked circuit so post-selection reads the final registers:
+
+        .. code-block:: python
+
+            from dataclasses import replace
+            from qiskit import ClassicalRegister
+
+            payload = circuit.remove_final_measurements(inplace=False)
+            noise = NoiseModel(gate_noise=1e-3)
+            checked = add_pauli_checks(payload, [1], noise, stabilizers="all")[-1]
+
+            measured = checked.circuit.copy()
+            measured.h(range(3))  # any basis rotation of the payload
+            meas = ClassicalRegister(3, "meas")
+            measured.add_register(meas)
+            measured.measure(range(3), meas)
+            checked = replace(checked, circuit=measured)
+            accept = checked.get_postselection_method()  # takes a bitstring of ``measured``
     """
     # Set global random seed if provided for full reproducibility
     if seed is not None:
@@ -176,7 +229,7 @@ def add_pauli_checks(
             "`circuit.remove_final_measurements()`) to find checks for stabilizers, or drop "
             "`stabilizers` to find checks for the measurements."
         )
-    if isinstance(stabilizers, str) and stabilizers != "all":
+    if isinstance(stabilizers, Pauli) or (isinstance(stabilizers, str) and stabilizers != "all"):
         raise ValueError(
             f"Invalid stabilizers value: {stabilizers!r}; expected 'all' or a sequence of Paulis."
         )
@@ -306,8 +359,8 @@ def add_pauli_checks(
     # input side of the payload circuit.
     picker_stabilizers = None if stabilizers is None else "all"
     logical_stabilizers = (
-        _input_stabilizer_labels(
-            stabilizers, circuit.num_qubits, payload_phys if is_isa else None, virtual_circuit
+        _convert_stabilizers(
+            stabilizers, virtual_circuit, payload_phys if is_isa else None, circuit.num_qubits
         )
         if stabilizers is not None and not isinstance(stabilizers, str)
         else None
@@ -410,56 +463,6 @@ def add_pauli_checks(
         )
         for k, circ in enumerate(result.circuits)
     ]
-
-
-def _input_stabilizer_labels(
-    stabilizers: Sequence[Pauli | str],
-    num_qubits: int,
-    payload_phys: list[int] | None,
-    payload_circuit: QuantumCircuit,
-) -> list[str]:
-    """Map stabilizers of the prepared state to little-endian ``Z`` labels on the payload input.
-
-    Args:
-        stabilizers: Paulis or labels on the ``num_qubits`` qubits of the input circuit.
-        num_qubits: Width of the input circuit.
-        payload_phys: In ISA mode, the physical qubit holding each virtual payload qubit; the
-            Paulis must be the identity elsewhere. ``None`` outside ISA mode.
-        payload_circuit: The measurement-free payload circuit the picker runs on.
-
-    Returns:
-        For each stabilizer ``G``, the label of ``U^dagger G U`` with ``U`` the payload circuit,
-        character ``i`` acting on qubit ``i``, sign dropped.
-
-    Raises:
-        ValueError: A Pauli has the wrong width, acts outside the payload, or is not a stabilizer
-            of the prepared state, i.e. its back-propagated image has an ``X`` or ``Y`` component.
-    """
-    clifford = _clifford_of(payload_circuit)
-    labels = []
-    for stabilizer in stabilizers:
-        pauli = stabilizer if isinstance(stabilizer, Pauli) else Pauli(stabilizer)
-        if pauli.num_qubits != num_qubits:
-            raise ValueError(
-                f"Stabilizer {stabilizer} acts on {pauli.num_qubits} qubits; the circuit has "
-                f"{num_qubits}."
-            )
-        if payload_phys is not None:
-            off_payload = np.ones(num_qubits, dtype=bool)
-            off_payload[payload_phys] = False
-            if (pauli.x[off_payload] | pauli.z[off_payload]).any():
-                raise ValueError(
-                    f"Stabilizer {stabilizer} acts on qubits outside the payload "
-                    f"{sorted(payload_phys)}; in ISA mode stabilizers must be the identity on "
-                    "every other physical qubit."
-                )
-            pauli = Pauli((pauli.z[payload_phys], pauli.x[payload_phys]))
-        # Heisenberg frame: the image of G on the input state |0...0>.
-        image = pauli.evolve(clifford, frame="h")
-        if image.x.any():
-            raise ValueError(f"{stabilizer} is not a stabilizer of the state the circuit prepares.")
-        labels.append("".join("Z" if z else "I" for z in image.z))
-    return labels
 
 
 def _input_basis_gates(circuit: QuantumCircuit) -> list[str]:

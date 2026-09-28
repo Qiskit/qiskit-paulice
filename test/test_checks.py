@@ -26,6 +26,7 @@ from qiskit_paulice import CheckedCircuit
 from qiskit_paulice._internal import Metric as _Metric
 from qiskit_paulice._internal.conversion import convert_noise_model as _convert_noise_model
 from qiskit_paulice._internal.station import CheckPickerStation
+from qiskit_paulice.checked_circuit import _fault_channels
 from qiskit_paulice.checks import (
     _lift_to_isa_circuit,
     _remove_inactive_qubits,
@@ -34,9 +35,18 @@ from qiskit_paulice.checks import (
 )
 from qiskit_paulice.noise_models import NoiseModel
 
+from .modes import MODES as _MODES
+from .modes import add_pauli_checks_in as _add_pauli_checks_in
+
 _DEFAULT_NOISE = NoiseModel(gate_noise=1e-3, readout_noise=1e-2)
 _PAYLOAD_PHYS = [5, 6, 7]
 _ANCILLA_PHYS = [4, 8]
+
+
+def _register_bits(circuit: QuantumCircuit, bitstring: str, name: str) -> str:
+    """The bits of classical register ``name`` in a space-separated counts key."""
+    names = [creg.name for creg in reversed(circuit.cregs)]
+    return dict(zip(names, bitstring.split(), strict=True))[name]
 
 
 def _clifford(nq: int = 3, layers: int = 2) -> QuantumCircuit:
@@ -217,15 +227,16 @@ class TestAddPauliChecksShallowWires(unittest.TestCase):
         # search used to raise "min() arg is an empty sequence"). Interior qubits
         # are checkable. The reported targets/checks reflect only what committed.
         n = 6
-        with warnings.catch_warnings():
-            # GHZ's {h, cx} basis is non-universal; the basis-match step may warn.
-            warnings.simplefilter("ignore", UserWarning)
-            result = add_pauli_checks(_ghz(n), list(range(n)), _DEFAULT_NOISE, seed=0)
-        final = result[-1]
-        self.assertEqual(final.target_qubits, tuple(range(1, n - 1)))  # endpoints dropped
-        self.assertEqual(len(final.check_qubits), len(final.target_qubits))
-        self.assertEqual(len(final.check_support), len(final.target_qubits))
-        _assert_variant_progression(self, result, expected_targets=list(range(1, n - 1)))
+        for mode in _MODES:
+            with self.subTest(mode=mode), warnings.catch_warnings():
+                # GHZ's {h, cx} basis is non-universal; the basis-match step may warn.
+                warnings.simplefilter("ignore", UserWarning)
+                result = _add_pauli_checks_in(mode, _ghz(n), list(range(n)), _DEFAULT_NOISE, seed=0)
+                final = result[-1]
+                self.assertEqual(final.target_qubits, tuple(range(1, n - 1)))  # endpoints dropped
+                self.assertEqual(len(final.check_qubits), len(final.target_qubits))
+                self.assertEqual(len(final.check_support), len(final.target_qubits))
+                _assert_variant_progression(self, result, expected_targets=list(range(1, n - 1)))
 
     def test_ghz_endpoint_only_target_yields_no_checks(self):
         # A lone endpoint target can't be checked: return just the bare circuit.
@@ -237,23 +248,34 @@ class TestAddPauliChecksShallowWires(unittest.TestCase):
     def test_ghz_checks_are_valid_noiselessly(self):
         # Correctness: with no noise every shot must pass all checks (syndrome 0)
         # and the payload must stay a clean GHZ distribution -- this validates the
-        # check-qubit / syndrome mapping for the skipped-target case.
+        # check-qubit / syndrome mapping for the skipped-target case. In stabilizer
+        # mode the payload measurements are appended after the checks were found.
         from qiskit_aer import AerSimulator
 
         n = 5
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-            final = add_pauli_checks(_ghz(n), list(range(n)), _DEFAULT_NOISE, seed=0)[-1]
-        counts = (
-            AerSimulator(method="stabilizer")
-            .run(final.circuit, shots=2000, seed_simulator=1)
-            .result()
-            .get_counts()
-        )
-        postselect = final.get_postselection_method()
-        self.assertTrue(all(not postselect(bitstring).any() for bitstring in counts))
-        payloads = {bitstring.split()[-1] for bitstring in counts}
-        self.assertLessEqual(payloads, {"0" * n, "1" * n})
+        for mode in _MODES:
+            with self.subTest(mode=mode), warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                final = _add_pauli_checks_in(mode, _ghz(n), list(range(n)), _DEFAULT_NOISE, seed=0)[
+                    -1
+                ]
+                if mode == "stabilizers":
+                    measured = final.circuit.copy()
+                    measured.add_register(ClassicalRegister(n, "meas"))
+                    measured.measure(range(n), measured.cregs[-1])
+                    final = replace(final, circuit=measured)
+                counts = (
+                    AerSimulator(method="stabilizer")
+                    .run(final.circuit, shots=2000, seed_simulator=1)
+                    .result()
+                    .get_counts()
+                )
+                postselect = final.get_postselection_method()
+                self.assertTrue(all(not postselect(bitstring).any() for bitstring in counts))
+                payloads = {
+                    _register_bits(final.circuit, bitstring, "meas") for bitstring in counts
+                }
+                self.assertLessEqual(payloads, {"0" * n, "1" * n})
 
 
 class TestAddPauliChecksBasic(unittest.TestCase):
@@ -362,43 +384,36 @@ class TestAddPauliChecksPermutations(unittest.TestCase):
     """
 
     def test_cost_ler(self):
-        """``cost="LER"`` produces a probability cost in [0, 1] for each variant."""
-        result = add_pauli_checks(
-            _clifford(),
-            [0],
-            _DEFAULT_NOISE,
-            cost="LER",
-            cost_nshots=200,
-            seed=0,
-        )
-        _assert_variant_progression(self, result, expected_targets=[0])
-        for variant in result:
-            self.assertIsInstance(variant.cost, float)
-            self.assertEqual(variant.cost_metric, "LER")
-            self.assertGreaterEqual(variant.cost, 0.0)
-            self.assertLessEqual(variant.cost, 1.0)
+        """``cost="LER"`` produces a probability cost in [0, 1] for each variant, in both modes."""
+        for mode in _MODES:
+            with self.subTest(mode=mode):
+                result = _add_pauli_checks_in(
+                    mode, _clifford(), [0], _DEFAULT_NOISE, cost="LER", cost_nshots=200, seed=0
+                )
+                _assert_variant_progression(self, result, expected_targets=[0])
+                for variant in result:
+                    self.assertIsInstance(variant.cost, float)
+                    self.assertEqual(variant.cost_metric, "LER")
+                    self.assertGreaterEqual(variant.cost, 0.0)
+                    self.assertLessEqual(variant.cost, 1.0)
 
     def test_method_genetic(self):
-        result = add_pauli_checks(
-            _clifford(),
-            [0],
-            _DEFAULT_NOISE,
-            method="genetic",
-            seed=0,
-        )
-        _assert_variant_progression(self, result, expected_targets=[0])
-        self.assertIsInstance(result[-1].cost, float)
+        for mode in _MODES:
+            with self.subTest(mode=mode):
+                result = _add_pauli_checks_in(
+                    mode, _clifford(), [0], _DEFAULT_NOISE, method="genetic", seed=0
+                )
+                _assert_variant_progression(self, result, expected_targets=[0])
+                self.assertIsInstance(result[-1].cost, float)
 
     def test_method_windowed_genetic(self):
-        result = add_pauli_checks(
-            _clifford(),
-            [0],
-            _DEFAULT_NOISE,
-            method="windowed_genetic",
-            seed=0,
-        )
-        _assert_variant_progression(self, result, expected_targets=[0])
-        self.assertIsInstance(result[-1].cost, float)
+        for mode in _MODES:
+            with self.subTest(mode=mode):
+                result = _add_pauli_checks_in(
+                    mode, _clifford(), [0], _DEFAULT_NOISE, method="windowed_genetic", seed=0
+                )
+                _assert_variant_progression(self, result, expected_targets=[0])
+                self.assertIsInstance(result[-1].cost, float)
 
     def test_gate_wise_noise(self):
         """Per-edge dict noise keyed by ``(a, b)`` int pairs."""
@@ -706,6 +721,8 @@ class TestAddPauliChecksStabilizers(unittest.TestCase):
             add_pauli_checks(_clifford(), [1], _DEFAULT_NOISE, stabilizers="all")
         with self.assertRaisesRegex(ValueError, "expected 'all'"):
             add_pauli_checks(self.payload, [1], _DEFAULT_NOISE, stabilizers="some")
+        with self.assertRaisesRegex(ValueError, "sequence of Paulis"):
+            add_pauli_checks(self.payload, [1], _DEFAULT_NOISE, stabilizers=Pauli("ZII"))
         with self.assertRaisesRegex(ValueError, "empty"):
             add_pauli_checks(self.payload, [1], _DEFAULT_NOISE, stabilizers=[])
 
@@ -748,6 +765,14 @@ class TestAddPauliChecksStabilizers(unittest.TestCase):
                 ancilla_qubits=_ANCILLA_PHYS,
                 stabilizers=[_z_on(10, [0])],
             )
+        with self.assertRaisesRegex(ValueError, "acts on 3 qubits"):
+            add_pauli_checks(
+                isa,
+                targets,
+                _DEFAULT_NOISE,
+                ancilla_qubits=_ANCILLA_PHYS,
+                stabilizers=[_z_on(3, [1])],
+            )
 
 
 class TestCheckPickerStation(unittest.TestCase):
@@ -763,8 +788,9 @@ class TestCheckPickerStation(unittest.TestCase):
         return station
 
     def test_pauli_label_and_padded_label_agree(self):
-        """A payload-width Pauli, its little-endian label, and a label padded to the ancilla
-        width describe the same group (regression: ``Z`` bits were misplaced for short labels)."""
+        """A Qiskit Pauli, its internal label (character ``i`` acts on qubit ``i``), and that
+        label padded to the ancilla width describe the same group (regression: ``Z`` bits were
+        misplaced for short labels)."""
         results = {
             (station.get_dimension(), station.get_current_energy())
             for station in (
@@ -774,6 +800,27 @@ class TestCheckPickerStation(unittest.TestCase):
             )
         }
         self.assertEqual(len(results), 1)
+
+    def test_internal_label_convention_matches_qiskit(self):
+        """Character ``q`` of an internal label acts on qubit ``q``: the picker's initial gamma
+        for the single logical stabilizer ``Z_q`` equals the pure-Qiskit value, the exponential of
+        twice the summed rates of noise generators whose output image anticommutes with the
+        image of ``Z_q`` under the circuit. A reversed convention would swap qubits 0 and 2."""
+        rates, x_img, z_img, _ = _fault_channels(self.payload, self.noise[0])
+        clifford = Clifford(self.payload)
+        for qubit in range(3):
+            z = _z_on(3, [qubit])
+            image = z.evolve(clifford, frame="s")
+            anticommutes = ((x_img & image.z).sum(axis=1) + (z_img & image.x).sum(axis=1)) % 2
+            expected = np.exp(2 * rates[anticommutes == 1].sum())
+            label = "I" * qubit + "Z" + "I" * (2 - qubit)
+            station = self._station(stabilizers="all", logical_stabilizers=[label])
+            with self.subTest(qubit=qubit):
+                self.assertAlmostEqual(station.get_current_energy(), expected)
+        self.assertNotAlmostEqual(
+            self._station(stabilizers="all", logical_stabilizers=["ZII"]).get_current_energy(),
+            self._station(stabilizers="all", logical_stabilizers=["IIZ"]).get_current_energy(),
+        )
 
     def test_logical_stabilizers_change_the_cost_but_not_the_check_space(self):
         whole = self._station(stabilizers="all")

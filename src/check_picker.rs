@@ -74,12 +74,15 @@ pub struct CheckPicker {
 impl CheckPicker {
     /// Builds a picker for `circuit`.
     ///
-    /// Pauli labels are little-endian strings over `nqubits` qubits (shorter labels are
-    /// padded with identities). `stabilizer_group` lists Paulis that stabilize the circuit's
-    /// input state: a check is valid iff its back-propagated product lies in that group,
-    /// possibly times Z on `measured_qubits` at the output. `logical_stabilizers` optionally
-    /// names a different set of input stabilizers whose forward images define the logical
-    /// errors the metric counts; by default `stabilizer_group` is used for both roles.
+    /// Pauli labels are internal labels over `nqubits` qubits: character `i` acts on qubit
+    /// `i`, the reverse of a Qiskit label (shorter labels are padded with identities).
+    ///
+    /// - `stabilizer_group` decides validity: Paulis stabilizing the input state, and a check
+    ///   is valid iff its back-propagated product lies in that group, possibly times Z on
+    ///   `measured_qubits` at the output. By default it also decides the cost.
+    /// - `logical_stabilizers` decides cost only, never validity: input stabilizers whose
+    ///   forward images define the logical errors the metric counts, in place of
+    ///   `stabilizer_group`.
     #[new]
     #[pyo3(signature = (
         circuit,

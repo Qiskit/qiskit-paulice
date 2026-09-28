@@ -12,8 +12,9 @@
 
 pub type Pauli = Vec<bool>;
 
-/// Parses a little-endian Pauli label (character `i` acts on qubit `i`) into the symplectic
-/// vector `[x_0..x_{n-1}, z_0..z_{n-1}]` on `n` qubits.
+/// Parses an internal Pauli label, in which character `i` acts on qubit `i` (the reverse of a
+/// Qiskit label, whose rightmost character is qubit 0), into the symplectic vector
+/// `[x_0..x_{n-1}, z_0..z_{n-1}]` on `n` qubits.
 ///
 /// A label shorter than `n` is padded with identities; characters beyond `n` are ignored.
 pub fn string_to_pauli(s: &str, n: usize) -> Pauli {
@@ -47,6 +48,9 @@ mod pauli_tests {
     #[test]
     fn short_label_is_padded_with_identities() {
         // Z on qubit 1 of a 3-qubit register, given as a 2-character label.
-        assert_eq!(string_to_pauli("IZ", 3), vec![false, false, false, false, true, false]);
+        assert_eq!(
+            string_to_pauli("IZ", 3),
+            vec![false, false, false, false, true, false]
+        );
     }
 }

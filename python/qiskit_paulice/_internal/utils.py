@@ -19,7 +19,11 @@ from qiskit.quantum_info import Pauli
 
 from ._internal_r import CheckPicker, NoiseModel
 from ._internal_r import PyMetric as Metric
-from .conversion import convert_to_rustiq_circuit
+from .conversion import (
+    convert_to_rustiq_circuit,
+    normalize_measured_qubits,
+    normalize_stabilizers,
+)
 
 
 def validate_terminal_measurements(circuit: QuantumCircuit) -> None:
@@ -48,44 +52,6 @@ def validate_terminal_measurements(circuit: QuantumCircuit) -> None:
                 measured.add(qubit)
 
 
-def normalize_stabilizers(
-    stabilizers: None | list[str] | list[Pauli] | str, num_qubits: int
-) -> list[str]:
-    """Turn a stabilizer specification into little-endian Pauli labels for the Rust picker.
-
-    Args:
-        stabilizers: ``None`` (no stabilizers), ``"all"`` (Z on each of the ``num_qubits``
-            qubits, the stabilizer group of the all-zeros state), a list of little-endian
-            labels, or a list of :class:`~qiskit.quantum_info.Pauli`. A Pauli's phase is
-            dropped, since neither group membership nor commutation depends on it. The Rust
-            side pads labels shorter than its register with identities.
-        num_qubits: Number of qubits ``"all"`` expands over.
-
-    Raises:
-        ValueError: ``stabilizers`` is a string other than ``"all"``.
-    """
-    if stabilizers is None:
-        return []
-    if isinstance(stabilizers, str):
-        if stabilizers != "all":
-            raise ValueError(f"Unexpected stabilizers value {stabilizers!r}; expected 'all'")
-        return ["I" * q + "Z" + "I" * (num_qubits - q - 1) for q in range(num_qubits)]
-    return [
-        Pauli((s.z, s.x)).to_label()[::-1] if isinstance(s, Pauli) else s for s in stabilizers
-    ]
-
-
-def normalize_measured_qubits(measured_qubits: None | list[int] | str, num_qubits: int) -> list[int]:
-    """Expand ``"all"`` to every qubit index and ``None`` to no qubits."""
-    if measured_qubits is None:
-        return []
-    if isinstance(measured_qubits, str):
-        if measured_qubits != "all":
-            raise ValueError(f"Unexpected measured_qubits value {measured_qubits!r}; expected 'all'")
-        return list(range(num_qubits))
-    return list(measured_qubits)
-
-
 def build_check_picker(
     circuit: QuantumCircuit,
     metric: Metric,
@@ -98,9 +64,9 @@ def build_check_picker(
 ):
     """Builds a rust CheckPicker object for a given qiskit circuit & some parameters.
 
-    ``stabilizers`` are input stabilizers a check may back-propagate to; ``logical_stabilizers``
-    optionally names the input stabilizers whose forward images the metric protects instead
-    (see :class:`.CheckPickerStation`).
+    ``stabilizers`` decides validity: a check may back-propagate to any product of them.
+    ``logical_stabilizers`` decides cost only: the metric protects their forward images instead
+    of those of ``stabilizers`` (see :class:`.CheckPickerStation`).
     """
     noise_models = noise_models or []
     assert isinstance(metric, Metric), "metric should be a Metric instance"

@@ -81,11 +81,12 @@ def pick_checks(
         targets (List[int]): list of target data to attach the checks to
         noise_models (List[NoiseModel]): list of noise models to consider during check picking
         metric (Metric): the metric to optimize during check picking
-        stabilizers (List[str] or List[Pauli] or None or "all"): Paulis stabilizing the input
-          state, as little-endian labels or `Pauli` (phase ignored); "all" is Z on every
-          qubit. A valid check back-propagates into the group they generate and its syndrome
-          is the ancilla bit alone (`virtual_zs` are empty). Mutually exclusive with
-          `measured_qubits`. See `CheckPickerStation`.
+        stabilizers (List[str] or List[Pauli] or None or "all"): validity (and, by default,
+          cost). Paulis stabilizing the input state, as `Pauli` (phase ignored) or internal
+          labels, in which character i acts on qubit i, the reverse of a Qiskit label; "all"
+          is Z on every qubit. A valid check back-propagates into the
+          group they generate and its syndrome is the ancilla bit alone (`virtual_zs` are
+          empty). Mutually exclusive with `measured_qubits`. See `CheckPickerStation`.
         measured_qubits (List[int] or None or "all"): qubits measured in Z at the end of the
           circuit, or "all". A valid check may absorb Z on measured qubits, which then join
           its `virtual_zs`. Mutually exclusive with `stabilizers`.
@@ -93,9 +94,9 @@ def pick_checks(
           "genetic, "windowed_genetic"
         verbose (bool): whether to print progress information
         seed (int or None): random seed for reproducible check selection
-        logical_stabilizers (List[str] or List[Pauli] or None): input stabilizers whose
-          forward images the metric protects, instead of `stabilizers`. Only with
-          `stabilizers`.
+        logical_stabilizers (List[str] or List[Pauli] or None): cost only, never validity.
+          Input stabilizers whose forward images the metric protects, instead of
+          `stabilizers`. Only with `stabilizers`.
         **kwargs: additional arguments passed to the check picking method
 
     Returns:

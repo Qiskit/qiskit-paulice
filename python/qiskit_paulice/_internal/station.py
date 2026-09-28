@@ -18,8 +18,12 @@ from qiskit.quantum_info import Pauli
 
 from ._internal_r import CheckPicker, NoiseModel
 from ._internal_r import PyMetric as Metric
-from .conversion import convert_to_qiskit_circuit, convert_to_rustiq_circuit
-from .utils import normalize_measured_qubits, normalize_stabilizers
+from .conversion import (
+    convert_to_qiskit_circuit,
+    convert_to_rustiq_circuit,
+    normalize_measured_qubits,
+    normalize_stabilizers,
+)
 
 
 class CheckPickerStation:
@@ -33,19 +37,23 @@ class CheckPickerStation:
         n_checks_to_add: Number of ancilla qubits to reserve after the payload qubits.
         metric: Cost metric to minimize.
         noise_models: Rust noise models used by the metric.
-        stabilizers: Paulis stabilizing the circuit's input state, as ``"all"`` (Z on every
-            qubit, the stabilizer group of the all-zeros input) or a list of little-endian
-            labels or :class:`~qiskit.quantum_info.Pauli` (phase ignored). A check is valid
-            iff its back-propagated product lies in the group they generate; its syndrome is
-            the ancilla bit alone. Unless ``logical_stabilizers`` is given, the metric counts
-            an error as logical iff it anticommutes with the forward image of one of them.
-        measured_qubits: Qubits measured in the Z basis at the end of the circuit, or
-            ``"all"``. A check is valid iff its product, times Z on some measured qubits,
-            propagates to the identity; those qubits join the syndrome. The metric counts an
-            error as logical iff it flips a measured bit.
-        logical_stabilizers: Input stabilizers whose forward images the metric protects,
-            instead of ``stabilizers``. Same formats as ``stabilizers``; only meaningful with
-            ``stabilizers`` and not ``measured_qubits``.
+        stabilizers: **Validity** (and, by default, cost). Paulis stabilizing the circuit's
+            input state, as ``"all"`` (Z on every qubit, the stabilizer group of the all-zeros
+            input), a list of :class:`~qiskit.quantum_info.Pauli` (phase ignored), or a list
+            of internal labels, in which character ``i`` acts on qubit ``i``, the reverse of
+            a Qiskit label. A check is valid iff its back-propagated product lies in the
+            group they generate; its syndrome is the ancilla bit alone. Unless
+            ``logical_stabilizers`` is given, the metric also counts an error as logical iff
+            it anticommutes with the forward image of one of them.
+        measured_qubits: **Validity and cost**, for measurement-anchored checks. Qubits
+            measured in the Z basis at the end of the circuit, or ``"all"``. A check is valid
+            iff its product, times Z on some measured qubits, propagates to the identity;
+            those qubits join the syndrome. The metric counts an error as logical iff it flips
+            a measured bit.
+        logical_stabilizers: **Cost only**; never affects which checks are valid. Input
+            stabilizers whose forward images the metric protects, in place of ``stabilizers``.
+            Same formats as ``stabilizers``; only meaningful with ``stabilizers`` and not
+            ``measured_qubits``.
     """
 
     def __init__(
