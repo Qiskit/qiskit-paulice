@@ -532,11 +532,11 @@ class TestEstimateFaultRates(unittest.TestCase):
             abs(estimate.acceptance_rate - exact_accept), 5 * estimate.acceptance_stderr
         )
         self.assertLess(
-            abs(estimate.harmless_rate - exact_harmless / exact_accept),
+            abs(estimate.harmless_rate - exact_harmless),
             5 * estimate.harmless_stderr + 1e-6,
         )
         self.assertLess(
-            abs(estimate.logical_error_rate - exact_logical / exact_accept),
+            abs(estimate.logical_error_rate - exact_logical),
             5 * estimate.logical_error_stderr + 1e-6,
         )
         for rate, stderr, exact in zip(
@@ -550,7 +550,7 @@ class TestEstimateFaultRates(unittest.TestCase):
     def test_without_payload_measurements_logical_means_state_changing(self):
         """Checks found for stabilizers leave the payload unmeasured; a logical error is then
         any accepted error that changes the state, and the harmless and logical rates partition
-        the accepted non-identity errors (checked against the total error probability)."""
+        the accepted non-identity errors (checked against the acceptance rate)."""
         bare = QuantumCircuit(3)
         for _ in range(2):
             bare.h(0)
@@ -563,7 +563,9 @@ class TestEstimateFaultRates(unittest.TestCase):
         self.assertEqual(checked.check_support, ((3,),))
         estimate = checked.estimate_fault_rates(noise, shots=100_000, seed=3)
         self.assertGreater(estimate.logical_error_rate, 0)
-        self.assertLessEqual(estimate.harmless_rate + estimate.logical_error_rate, 1)
+        self.assertLessEqual(
+            estimate.harmless_rate + estimate.logical_error_rate, estimate.acceptance_rate
+        )
         # Readout noise on the ancilla is supported without payload measurements.
         with_readout = checked.estimate_fault_rates(
             NoiseModel(gate_noise=1e-2, readout_noise=1e-2), shots=20_000, seed=3
@@ -596,17 +598,15 @@ class TestEstimateFaultRates(unittest.TestCase):
         )
         in_support = [q in checked.check_support[0] for q in measured]
         is_payload = [q not in checked.check_qubits for q in measured]
-        exact_accept = 0.0
         exact_logical = 0.0
         for subset in range(2 ** len(measured)):
             flipped = [subset >> j & 1 for j in range(len(measured))]
             probability = np.prod([readout if f else 1 - readout for f in flipped])
-            if sum(f for f, s in zip(flipped, in_support, strict=True) if s) % 2 == 0:
-                exact_accept += probability
-                if any(f and p for f, p in zip(flipped, is_payload, strict=True)):
-                    exact_logical += probability
+            accepted = sum(f for f, s in zip(flipped, in_support, strict=True) if s) % 2 == 0
+            if accepted and any(f and p for f, p in zip(flipped, is_payload, strict=True)):
+                exact_logical += probability
         self.assertLess(
-            abs(estimate.logical_error_rate - exact_logical / exact_accept),
+            abs(estimate.logical_error_rate - exact_logical),
             5 * estimate.logical_error_stderr,
         )
 
@@ -680,13 +680,17 @@ class TestEstimateFaultRates(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "non-finite or negative"):
             checked.estimate_fault_rates(NoiseModel(gate_noise={(0, 1): [("XX", -1e-3)]}))
 
-    def test_no_accepted_shot_raises(self):
-        """A sample with every shot rejected raises instead of dividing by zero."""
+    def test_no_accepted_shot(self):
+        """A sample with every shot rejected gives zero harmless and logical rates."""
         checked = self._checked()
         noise = NoiseModel(gate_noise=2.9, readout_noise=0.49)
-        with self.assertRaisesRegex(ValueError, "was accepted"):
-            for seed in range(60):  # each single shot is rejected with probability ~1/2
-                checked.estimate_fault_rates(noise, shots=1, seed=seed)
+        for seed in range(60):  # each single shot is rejected with probability ~1/2
+            estimate = checked.estimate_fault_rates(noise, shots=1, seed=seed)
+            if estimate.acceptance_rate == 0:
+                break
+        self.assertEqual(estimate.acceptance_rate, 0.0)
+        self.assertEqual(estimate.harmless_rate, 0.0)
+        self.assertEqual(estimate.logical_error_rate, 0.0)
 
     def test_barriers_transparent(self):
         """Barriers in the checked circuit do not change the estimate."""

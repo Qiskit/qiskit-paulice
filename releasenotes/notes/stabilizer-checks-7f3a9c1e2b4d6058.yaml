@@ -6,5 +6,5 @@ features:
     the new ``stabilizers`` argument to specify a subset of stabilizers for which to find valid checks.
   - |
     :meth:`~qiskit_paulice.checked_circuit.CheckedCircuit.estimate_fault_rates` reports, for a
-    circuit that measures no payload qubit, the fraction of accepted shots whose error changes
-    the prepared state as its logical error rate.
+    circuit that measures no payload qubit, the fraction of shots that are accepted and whose
+    error changes the prepared state as its logical error rate.
