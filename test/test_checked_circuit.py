@@ -36,6 +36,9 @@ from samplomatic.annotations import InjectNoise
 from samplomatic.transpiler import generate_boxing_pass_manager
 from samplomatic.utils import get_annotation
 
+from .modes import MODES as _MODES
+from .modes import add_pauli_checks_in as _add_pauli_checks_in
+
 
 def _bell_with_measure() -> QuantumCircuit:
     qc = QuantumCircuit(2, 2)
@@ -94,13 +97,13 @@ def _box_edge_sets(boxed):
     return out
 
 
-def _checked_example(nq=4, depth=4, seed=1):
+def _checked_example(nq=4, depth=4, seed=1, mode="measurements"):
     """A ``CheckedCircuit`` and its boxed form."""
     qc = _bare_circuit(nq, depth)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        checked = add_pauli_checks(
-            qc, list(range(nq)), NoiseModel(gate_noise=1e-3, readout_noise=1e-2), seed=seed
+        checked = _add_pauli_checks_in(
+            mode, qc, list(range(nq)), NoiseModel(gate_noise=1e-3, readout_noise=1e-2), seed=seed
         )[-1]
         boxed = checked.box()
     return checked, boxed
@@ -279,41 +282,51 @@ class TestBox(unittest.TestCase):
 class TestIsolatedCheckLayers(unittest.TestCase):
     """Tests for the isolated check layers ``CheckedCircuit.box`` produces."""
 
-    def setUp(self):
-        self.checked, self.isolated = _checked_example(nq=6, depth=8, seed=4)
+    @classmethod
+    def setUpClass(cls):
+        cls.examples = {mode: _checked_example(nq=6, depth=8, seed=4, mode=mode) for mode in _MODES}
+        cls.checked, cls.isolated = cls.examples["measurements"]
 
     def test_same_circuit(self):
         """Isolating check gates doesn't change the unitary the circuit implements."""
-        stripped = self.checked._stratify(self.checked.circuit, None)
-        self.assertEqual(_gate_counts(self.checked.circuit), _gate_counts(stripped))
-        original = RemoveBarriers()(self.checked.circuit.remove_final_measurements(inplace=False))
-        restratified = RemoveBarriers()(stripped.remove_final_measurements(inplace=False))
-        self.assertEqual(Clifford(original), Clifford(restratified))
+        for mode, (checked, _) in self.examples.items():
+            with self.subTest(mode=mode):
+                stripped = checked._stratify(checked.circuit, None)
+                self.assertEqual(_gate_counts(checked.circuit), _gate_counts(stripped))
+                original = RemoveBarriers()(
+                    checked.circuit.remove_final_measurements(inplace=False)
+                )
+                restratified = RemoveBarriers()(stripped.remove_final_measurements(inplace=False))
+                self.assertEqual(Clifford(original), Clifford(restratified))
 
     def test_each_check_gate_boxed_alone(self):
         """A check box is exactly its one gate."""
-        ancillas = set(self.checked.check_qubits)
-        saw_check_box = False
-        for instruction in self.isolated.data:
-            if instruction.operation.name != "box":
-                continue
-            edges = _box_edges(instruction, self.isolated)
-            if any(set(e) & ancillas for e in edges):
-                self.assertEqual(len(edges), 1)
-                self.assertEqual(len(instruction.qubits), 2)
-                saw_check_box = True
-        self.assertTrue(saw_check_box)
+        for mode, (checked, isolated) in self.examples.items():
+            with self.subTest(mode=mode):
+                ancillas = set(checked.check_qubits)
+                saw_check_box = False
+                for instruction in isolated.data:
+                    if instruction.operation.name != "box":
+                        continue
+                    edges = _box_edges(instruction, isolated)
+                    if any(set(e) & ancillas for e in edges):
+                        self.assertEqual(len(edges), 1)
+                        self.assertEqual(len(instruction.qubits), 2)
+                        saw_check_box = True
+                self.assertTrue(saw_check_box)
 
     def test_unique_layers_is_payload_plus_one_per_check(self):
         """Ensure checks add one unique layer apiece."""
-        ancillas = set(self.checked.check_qubits)
-        payload, check = set(), set()
-        for edges in _box_edge_sets(self.isolated):
-            (check if any(set(e) & ancillas for e in edges) else payload).add(edges)
-        self.assertEqual(len(payload), 2)
-        self.assertEqual(len(check), len(self.checked.check_support))
-        # ... and every layer recurs rather than proliferating
-        self.assertLess(len(check) + len(payload), sum(1 for _ in _box_edge_sets(self.isolated)))
+        for mode, (checked, isolated) in self.examples.items():
+            with self.subTest(mode=mode):
+                ancillas = set(checked.check_qubits)
+                payload, check = set(), set()
+                for edges in _box_edge_sets(isolated):
+                    (check if any(set(e) & ancillas for e in edges) else payload).add(edges)
+                self.assertEqual(len(payload), 2)
+                self.assertEqual(len(check), len(checked.check_support))
+                # ... and every layer recurs rather than proliferating
+                self.assertLess(len(check) + len(payload), sum(1 for _ in _box_edge_sets(isolated)))
 
     def test_payload_layers_split_what_packing_would_merge(self):
         """The palette is authoritative: gates that packing would share a stratum get split."""
@@ -351,7 +364,9 @@ class TestIsolatedCheckLayers(unittest.TestCase):
 
     def test_builds_a_samplex(self):
         """The boxed circuit is a working samplomatic circuit."""
-        samplomatic.build(self.isolated)
+        for mode, (_, isolated) in self.examples.items():
+            with self.subTest(mode=mode):
+                samplomatic.build(isolated)
 
 
 class TestBareModelReuse(unittest.TestCase):
@@ -403,7 +418,7 @@ class TestBareModelReuse(unittest.TestCase):
 class TestEstimateFaultRates(unittest.TestCase):
     """Tests for :meth:`CheckedCircuit.estimate_fault_rates`."""
 
-    def _checked(self) -> CheckedCircuit:
+    def _checked(self, mode="measurements") -> CheckedCircuit:
         qc = QuantumCircuit(3)
         for _ in range(2):
             qc.h(0)
@@ -413,16 +428,22 @@ class TestEstimateFaultRates(unittest.TestCase):
             qc.s(2)
         qc.measure_all()
         noise = NoiseModel(gate_noise=1e-3, readout_noise=1e-2)
-        return add_pauli_checks(qc, [1], noise, seed=0)[-1]
+        return _add_pauli_checks_in(mode, qc, [1], noise, seed=0)[-1]
 
     def test_matches_exact_enumeration(self):
         """The estimate agrees with exact enumeration over every fault configuration.
 
         The oracle classifies each generator with explicit prefix/suffix subcircuits
         and ``Pauli.evolve`` -- deliberately different from the method's tableau sweep -- and
-        sums exact probabilities over all fault subsets.
+        sums exact probabilities over all fault subsets. A logical error flips a payload
+        outcome when the payload is measured, and changes the prepared state when it is not
+        (checks found for stabilizers).
         """
-        checked = self._checked()
+        for mode in _MODES:
+            with self.subTest(mode=mode):
+                self._assert_matches_exact_enumeration(self._checked(mode))
+
+    def _assert_matches_exact_enumeration(self, checked: CheckedCircuit):
         circuit = checked.circuit
         edges = sorted(
             {
@@ -503,7 +524,7 @@ class TestEstimateFaultRates(unittest.TestCase):
                 exact_accept += probability
                 if subset and not back_x.any() and (back_x | back_z).any():
                     exact_harmless += probability
-                if outcome.any():
+                if outcome.any() if payload else back_x.any():
                     exact_logical += probability
 
         estimate = checked.estimate_fault_rates(noise, shots=400_000, seed=7)
@@ -525,6 +546,29 @@ class TestEstimateFaultRates(unittest.TestCase):
             strict=True,
         ):
             self.assertLess(abs(rate - exact), 5 * stderr + 1e-6)
+
+    def test_without_payload_measurements_logical_means_state_changing(self):
+        """Checks found for stabilizers leave the payload unmeasured; a logical error is then
+        any accepted error that changes the state, and the harmless and logical rates partition
+        the accepted non-identity errors (checked against the total error probability)."""
+        bare = QuantumCircuit(3)
+        for _ in range(2):
+            bare.h(0)
+            bare.cx(0, 1)
+            bare.cx(1, 2)
+            bare.s(0)
+            bare.s(2)
+        noise = NoiseModel(gate_noise=1e-2)
+        checked = add_pauli_checks(bare, [1], noise, stabilizers="all", seed=0)[-1]
+        self.assertEqual(checked.check_support, ((3,),))
+        estimate = checked.estimate_fault_rates(noise, shots=100_000, seed=3)
+        self.assertGreater(estimate.logical_error_rate, 0)
+        self.assertLessEqual(estimate.harmless_rate + estimate.logical_error_rate, 1)
+        # Readout noise on the ancilla is supported without payload measurements.
+        with_readout = checked.estimate_fault_rates(
+            NoiseModel(gate_noise=1e-2, readout_noise=1e-2), shots=20_000, seed=3
+        )
+        self.assertGreater(with_readout.check_trigger_rates[0], estimate.check_trigger_rates[0])
 
     def test_readout_only(self):
         """Readout noise affects acceptance but is never a harmless state fault."""
@@ -679,7 +723,13 @@ class TestCoverageConsistency(unittest.TestCase):
 
     def test_uncovered_iff_zero_syndrome_signature(self):
         """A single-qubit fault after a 2q gate is uncovered iff no check detects it."""
-        checked = _checked_example(nq=3, depth=3)[0]
+        for mode in _MODES:
+            with self.subTest(mode=mode):
+                self._assert_uncovered_iff_zero_signature(
+                    _checked_example(nq=3, depth=3, mode=mode)[0]
+                )
+
+    def _assert_uncovered_iff_zero_signature(self, checked: CheckedCircuit):
         circuit = checked.circuit
         singles = ["XI", "YI", "ZI", "IX", "IY", "IZ"]
         edges = {

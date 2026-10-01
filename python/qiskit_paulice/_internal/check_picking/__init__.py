@@ -67,6 +67,7 @@ def pick_checks(
     method="windowed",
     verbose=False,
     seed=None,
+    logical_stabilizers=None,
     **kwargs,
 ):
     """All-in-one wrapper.
@@ -76,19 +77,26 @@ def pick_checks(
     Additional arguments are passed to the check picking method.
 
     Arguments:
-        circuit (QuantumCircuit): the base circuit
+        circuit (QuantumCircuit): the base circuit, without measurements
         targets (List[int]): list of target data to attach the checks to
         noise_models (List[NoiseModel]): list of noise models to consider during check picking
         metric (Metric): the metric to optimize during check picking
-        stabilizers (List[str] or None or "all"): list of stabilizers to use as checks.
-          Can be passed as a list of `Pauli`, a list of strings, or "all"
-          (a shorthand to all Z stabilizers)
-        measured_qubits (List[int] or None or "all"): list of measured qubits to use as checks.
-          Can be passed as a list of integers, or "all" (a shorthand to all qubits)
+        stabilizers (List[str] or List[Pauli] or None or "all"): validity (and, by default,
+          cost). Paulis stabilizing the input state, as `Pauli` (phase ignored) or internal
+          labels, in which character i acts on qubit i, the reverse of a Qiskit label; "all"
+          is Z on every qubit. A valid check back-propagates into the
+          group they generate and its syndrome is the ancilla bit alone (`virtual_zs` are
+          empty). Mutually exclusive with `measured_qubits`. See `CheckPickerStation`.
+        measured_qubits (List[int] or None or "all"): qubits measured in Z at the end of the
+          circuit, or "all". A valid check may absorb Z on measured qubits, which then join
+          its `virtual_zs`. Mutually exclusive with `stabilizers`.
         method (str): the check picking method to use. One of "windowed",
           "genetic, "windowed_genetic"
         verbose (bool): whether to print progress information
         seed (int or None): random seed for reproducible check selection
+        logical_stabilizers (List[str] or List[Pauli] or None): cost only, never validity.
+          Input stabilizers whose forward images the metric protects, instead of
+          `stabilizers`. Only with `stabilizers`.
         **kwargs: additional arguments passed to the check picking method
 
     Returns:
@@ -103,7 +111,13 @@ def pick_checks(
 
     method = _METHODS[method]
     check_picker = CheckPickerStation(
-        circuit, len(targets), metric, noise_models, stabilizers, measured_qubits
+        circuit,
+        len(targets),
+        metric,
+        noise_models,
+        stabilizers,
+        measured_qubits,
+        logical_stabilizers=logical_stabilizers,
     )
     if verbose:
         print("[CHECK PICKING] Initial metric value:", check_picker.get_current_energy())

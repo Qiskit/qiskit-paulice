@@ -24,12 +24,12 @@ from typing import Any, Literal, NamedTuple
 import numpy as np
 from qiskit import QuantumCircuit
 from qiskit.circuit import Gate
-from qiskit.circuit.library import CXGate, CZGate, HGate, SdgGate, SGate, SXdgGate, SXGate
 from qiskit.quantum_info import Clifford, PauliList
 from samplomatic.transpiler import generate_boxing_pass_manager
 
 from ._internal import Metric as _Metric
 from ._internal import NoiseModel as _RustNoiseModel
+from ._internal.conversion import RUSTIQ_GATES as _RUSTIQ_GATES
 from ._internal.conversion import convert_noise_model as _convert_noise_model
 from ._internal.conversion import convert_to_rustiq_circuit as _convert_to_rustiq_circuit
 from ._internal.doping import dope_circuit as _dope_circuit
@@ -77,7 +77,10 @@ class FaultRates(NamedTuple):
             to :math:`|0^n\rangle`.
         harmless_stderr: Standard error of ``harmless_rate``.
         logical_error_rate: Fraction of accepted shots whose error flips one or more
-            payload measurement outcomes.
+            payload measurement outcomes. If the circuit measures no payload qubit, as when
+            its checks were found for stabilizers of the prepared state, it is instead the
+            fraction of accepted shots whose error changes the prepared state, i.e. is neither
+            the identity nor harmless.
         logical_error_stderr: Standard error of ``logical_error_rate``.
         acceptance_rate: Probability of a zero syndrome on every check.
         acceptance_stderr: Standard error of ``acceptance_rate``.
@@ -109,7 +112,8 @@ class CheckedCircuit:
             check uses ``check_qubits[i]`` to detect errors on ``target_qubits[i]`` and other
             qubits in ``check_support[i]``.
         check_support: For each check, the qubit indices whose measurement outcomes XOR
-            together to give that check's syndrome bit.
+            together to give that check's syndrome bit. For a check found for stabilizers of
+            the prepared state this is just its ancilla.
         cost: The value of the cost function with respect to the checks in ``circuit``
         cost_metric: The metric used to evaluate check quality (``gamma`` or ``LER``)
 
@@ -228,7 +232,9 @@ class CheckedCircuit:
         global phase on :math:`|0^n\rangle`. The *harmless rate* and *logical error rate*
         are the fractions of accepted shots whose error is harmless, or flips a payload
         measurement outcome; the *check trigger rate* is the fraction of all shots a given
-        check flags with a non-zero syndrome.
+        check flags with a non-zero syndrome. If no payload qubit is measured, an error is
+        logical when it changes the prepared state, so the harmless and logical rates then
+        partition the accepted non-identity errors.
 
         Args:
             noise_model: Noise to apply during Monte Carlo sampling.
@@ -290,7 +296,10 @@ class CheckedCircuit:
             )
         nonidentity = (back_x | back_z).any(axis=1)
         harmless = (accepted & nonidentity & ~back_x.any(axis=1)).sum() / num_accepted
-        logical = (accepted & outcome.any(axis=1)).sum() / num_accepted
+        # Without payload measurements there is no outcome to flip; an error is then logical
+        # iff it changes the state, i.e. its back-propagated image is not diagonal.
+        flips = outcome.any(axis=1) if payload.size else back_x.any(axis=1)
+        logical = (accepted & flips).sum() / num_accepted
         acceptance = num_accepted / shots
         triggers = syndrome.mean(axis=0)
 
@@ -321,8 +330,6 @@ class CheckedCircuit:
         box_options: Mapping[str, Any] | None = None,
     ) -> tuple[QuantumCircuit, tuple[Wire, ...]]:
         r"""Dope ``self.circuit`` with :class:`~qiskit.circuit.library.RZGate` rotations that commute with check stabilizers.
-
-        See `arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`_ for more details.
 
         Args:
             num_sites: Number of :class:`~qiskit.circuit.library.RZGate` rotations to place in
@@ -382,6 +389,10 @@ class CheckedCircuit:
                 # dope[0] follows the first H gate, and dope[1] follows the second.
 
                 bound = doped_circuit.assign_parameters([np.pi / 4, np.pi / 8])
+
+        References:
+            S. Martiel et al., *Sampling hard circuits with verifiably high fidelity*,
+            `arXiv:2607.25941 <https://arxiv.org/abs/2607.25941>`_.
         """
         if not box and (payload_layers is not None or box_options is not None):
             raise ValueError("payload_layers and box_options require box=True.")
@@ -561,17 +572,6 @@ def _edge_to_layers(
         for a, b in layer:
             edge_to_layers[(min(a, b), max(a, b))].add(index)
     return dict(edge_to_layers)
-
-
-_RUSTIQ_GATES = {
-    "CX": CXGate(),
-    "CZ": CZGate(),
-    "H": HGate(),
-    "S": SGate(),
-    "Sd": SdgGate(),
-    "SqrtX": SXGate(),
-    "SqrtXd": SXdgGate(),
-}
 
 
 def _fault_channels(

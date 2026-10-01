@@ -10,13 +10,26 @@
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 
+from collections.abc import Sequence
 from numbers import Real
 
 import numpy as np
 from qiskit import QuantumCircuit
-from qiskit.quantum_info import Pauli
+from qiskit.circuit.library import CXGate, CZGate, HGate, SdgGate, SGate, SXdgGate, SXGate
+from qiskit.quantum_info import Clifford, Pauli
 
 from ._internal_r import NoiseModel as RustNoiseModel
+
+RUSTIQ_GATES = {
+    "CX": CXGate(),
+    "CZ": CZGate(),
+    "H": HGate(),
+    "S": SGate(),
+    "Sd": SdgGate(),
+    "SqrtX": SXGate(),
+    "SqrtXd": SXdgGate(),
+}
+"""Qiskit gate for each rustiq gate name emitted by :func:`convert_to_rustiq_circuit`."""
 
 _NAMES_CONVERSION = {
     "cx": "CX",
@@ -101,6 +114,123 @@ def convert_to_rustiq_circuit(circuit):
         else:
             emit((name, qbits), inst_idx)
     return rustiq_circuit, qiskit_inst_indices
+
+
+def clifford_of(circuit: QuantumCircuit) -> Clifford:
+    """The Clifford ``circuit`` implements, ignoring measurements and barriers.
+
+    Goes through :func:`convert_to_rustiq_circuit`, so every gate it accepts is supported,
+    including ``rz`` by multiples of pi/2.
+
+    Raises:
+        ValueError: ``circuit`` contains a non-Clifford instruction.
+    """
+    gates, _ = convert_to_rustiq_circuit(circuit)
+    clifford_circuit = QuantumCircuit(circuit.num_qubits)
+    for name, qubits in gates:
+        clifford_circuit.append(RUSTIQ_GATES[name], qubits)
+    return Clifford(clifford_circuit)
+
+
+def convert_stabilizers(
+    stabilizers: Sequence[Pauli | str],
+    circuit: QuantumCircuit,
+    payload_qubits: Sequence[int] | None = None,
+    num_qubits: int | None = None,
+) -> list[str]:
+    """Map stabilizers of the state ``circuit`` prepares to internal labels on its input.
+
+    Args:
+        stabilizers: Paulis or labels in Qiskit convention (the rightmost character of a label
+            acts on qubit ``0``), each on ``num_qubits`` qubits. Without ``payload_qubits``
+            they act on the qubits of ``circuit``; with it, on a register in which
+            ``payload_qubits[v]`` holds qubit ``v`` of ``circuit`` and every other qubit must
+            carry the identity.
+        circuit: The measurement-free Clifford circuit, ``U``.
+        payload_qubits: The register position of each qubit of ``circuit``, or ``None``.
+        num_qubits: The width every stabilizer must have: the register width with
+            ``payload_qubits``, where it is required, else ``circuit.num_qubits`` by default.
+
+    Returns:
+        For each stabilizer ``G``, the internal label of ``U^dagger G U``: character ``i`` acts
+        on qubit ``i`` of ``circuit``, the reverse of a Qiskit label, and the sign is dropped.
+
+    Raises:
+        ValueError: A Pauli has the wrong width, acts outside ``payload_qubits``, or is not a
+            stabilizer of the prepared state, i.e. its back-propagated image has an ``X`` or
+            ``Y`` component; ``payload_qubits`` is given without ``num_qubits``.
+    """
+    clifford = clifford_of(circuit)
+    if num_qubits is None:
+        if payload_qubits is not None:
+            raise ValueError("num_qubits is required when payload_qubits is given.")
+        num_qubits = circuit.num_qubits
+    labels = []
+    for stabilizer in stabilizers:
+        pauli = stabilizer if isinstance(stabilizer, Pauli) else Pauli(stabilizer)
+        if pauli.num_qubits != num_qubits:
+            raise ValueError(
+                f"Stabilizer {stabilizer} acts on {pauli.num_qubits} qubits; expected "
+                f"{num_qubits}."
+            )
+        if payload_qubits is not None:
+            payload = list(payload_qubits)
+            off_payload = np.ones(num_qubits, dtype=bool)
+            off_payload[payload] = False
+            if (pauli.x[off_payload] | pauli.z[off_payload]).any():
+                raise ValueError(
+                    f"Stabilizer {stabilizer} acts on qubits outside the payload "
+                    f"{sorted(payload)}; stabilizers must be the identity on every other qubit."
+                )
+            pauli = Pauli((pauli.z[payload], pauli.x[payload]))
+        # Heisenberg frame: the image of G on the input state |0...0>.
+        image = pauli.evolve(clifford, frame="h")
+        if image.x.any():
+            raise ValueError(f"{stabilizer} is not a stabilizer of the state the circuit prepares.")
+        labels.append("".join("Z" if z else "I" for z in image.z))
+    return labels
+
+
+def normalize_stabilizers(
+    stabilizers: None | list[str] | list[Pauli] | str, num_qubits: int
+) -> list[str]:
+    """Turn a stabilizer specification into internal Pauli labels for the Rust picker.
+
+    An internal label has character ``i`` acting on qubit ``i``: the reverse of a Qiskit label,
+    whose rightmost character acts on qubit ``0``.
+
+    Args:
+        stabilizers: ``None`` (no stabilizers), ``"all"`` (Z on each of the ``num_qubits``
+            qubits, the stabilizer group of the all-zeros state), a list of internal labels
+            passed through unchanged, or a list of :class:`~qiskit.quantum_info.Pauli`, which
+            are converted. A Pauli's phase is dropped, since neither group membership nor
+            commutation depends on it. The Rust side pads labels shorter than its register
+            with identities.
+        num_qubits: Number of qubits ``"all"`` expands over.
+
+    Raises:
+        ValueError: ``stabilizers`` is a string other than ``"all"``.
+    """
+    if stabilizers is None:
+        return []
+    if isinstance(stabilizers, str):
+        if stabilizers != "all":
+            raise ValueError(f"Unexpected stabilizers value {stabilizers!r}; expected 'all'")
+        return ["I" * q + "Z" + "I" * (num_qubits - q - 1) for q in range(num_qubits)]
+    return [
+        Pauli((s.z, s.x)).to_label()[::-1] if isinstance(s, Pauli) else s for s in stabilizers
+    ]
+
+
+def normalize_measured_qubits(measured_qubits: None | list[int] | str, num_qubits: int) -> list[int]:
+    """Expand ``"all"`` to every qubit index and ``None`` to no qubits."""
+    if measured_qubits is None:
+        return []
+    if isinstance(measured_qubits, str):
+        if measured_qubits != "all":
+            raise ValueError(f"Unexpected measured_qubits value {measured_qubits!r}; expected 'all'")
+        return list(range(num_qubits))
+    return list(measured_qubits)
 
 
 def convert_to_qiskit_circuit(circuit, nqbits):

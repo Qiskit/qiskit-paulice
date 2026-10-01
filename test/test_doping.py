@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import itertools
 import unittest
 
 import numpy as np
@@ -30,8 +31,10 @@ from qiskit.quantum_info import (
 from qiskit_aer import AerSimulator
 from qiskit_paulice import CheckedCircuit, Wire
 from qiskit_paulice._internal.doping import _prune
-from qiskit_paulice.checks import add_pauli_checks
 from qiskit_paulice.noise_models import NoiseModel
+
+from .modes import MODES as _MODES
+from .modes import add_pauli_checks_in as _add_pauli_checks_in
 
 
 def _stabilizer_renyi_2(circuit: QuantumCircuit) -> float:
@@ -127,9 +130,6 @@ def _syndrome_values(checked: CheckedCircuit, circuit: QuantumCircuit) -> list[f
     return values
 
 
-<<<<<<< Updated upstream
-def _checked_circuit() -> CheckedCircuit:
-=======
 def _with_fault(circuit: QuantumCircuit, position: int, qubit: int, pauli: str) -> QuantumCircuit:
     """A copy of ``circuit`` with the gate ``pauli`` on ``qubit`` before instruction ``position``."""
     faulty = circuit.copy_empty_like()
@@ -141,7 +141,6 @@ def _with_fault(circuit: QuantumCircuit, position: int, qubit: int, pauli: str) 
 
 
 def _checked_circuit(mode="measurements") -> CheckedCircuit:
->>>>>>> Stashed changes
     """A small checked Clifford circuit with one spacetime Pauli check."""
     circuit = QuantumCircuit(3)
     for _ in range(2):
@@ -152,7 +151,7 @@ def _checked_circuit(mode="measurements") -> CheckedCircuit:
         circuit.s(2)
     circuit.measure_all()
     noise = NoiseModel(gate_noise=1e-3, readout_noise=1e-2)
-    return add_pauli_checks(circuit, [1], noise, seed=0)[-1]
+    return _add_pauli_checks_in(mode, circuit, [1], noise, seed=0)[-1]
 
 
 def _dope(circuit: QuantumCircuit, *args, **kwargs) -> tuple[QuantumCircuit, list[Wire]]:
@@ -385,7 +384,7 @@ class TestCheckedCircuitDoping(unittest.TestCase):
         measure_pos = _measure_positions(checked.circuit)
         for site in sites:
             self.assertNotIn(site.qubit, checked.check_qubits)
-            self.assertLessEqual(_position(site), measure_pos[site.qubit])
+            self.assertLessEqual(_position(site), measure_pos.get(site.qubit, len(checked.circuit)))
         # Every syndrome stays deterministic with its original sign.
         original = _syndrome_values(checked, checked.circuit)
         for value in original:
@@ -403,18 +402,22 @@ class TestCheckedCircuitDoping(unittest.TestCase):
 
     def test_code_preserved(self):
         """Doping changes the payload distribution but never breaks a check."""
-        checked = _checked_circuit()
-        self.assertEqual(len(checked.check_qubits), 1)
-        doped_circuit, doped_wires = checked.dope()
-        self.assertGreater(len(doped_wires), 0)
-        self._assert_code_preserved(checked, doped_circuit, list(doped_wires))
+        for mode in _MODES:
+            with self.subTest(mode=mode):
+                checked = _checked_circuit(mode)
+                self.assertEqual(len(checked.check_qubits), 1)
+                doped_circuit, doped_wires = checked.dope()
+                self.assertGreater(len(doped_wires), 0)
+                self._assert_code_preserved(checked, doped_circuit, list(doped_wires))
 
     def test_dope_returns_runnable_circuit(self):
         """``dope`` returns a plain circuit whose results the checked circuit post-selects."""
-        checked = _checked_circuit()
-        accept = checked.get_postselection_method()
-        for label, angle in (("T", np.pi / 4), ("S", np.pi / 2), ("template", None)):
-            with self.subTest(angle=label):
+        for mode, (label, angle) in itertools.product(
+            _MODES, (("T", np.pi / 4), ("S", np.pi / 2), ("template", None))
+        ):
+            checked = _checked_circuit(mode)
+            accept = checked.get_postselection_method()
+            with self.subTest(mode=mode, angle=label):
                 doped_circuit, doped_wires = checked.dope(angle=angle)
                 self.assertIsInstance(doped_circuit, QuantumCircuit)
                 self.assertIsInstance(doped_wires, tuple)
@@ -432,10 +435,11 @@ class TestCheckedCircuitDoping(unittest.TestCase):
         circuit = _paper_ansatz(4, seed=2)
         circuit.measure_all()
         noise = NoiseModel(gate_noise=1e-3, readout_noise=1e-2)
-        for label, checked in (
-            ("one check", _checked_circuit()),
-            ("two checks", add_pauli_checks(circuit, [1, 2], noise, seed=0)[-1]),
-        ):
+        cases = [(f"one check, {mode}", _checked_circuit(mode)) for mode in _MODES] + [
+            (f"two checks, {mode}", _add_pauli_checks_in(mode, circuit, [1, 2], noise, seed=0)[-1])
+            for mode in _MODES
+        ]
+        for label, checked in cases:
             undoped = _payload_probabilities(checked, checked.circuit)
             template, template_wires = checked.dope(angle=None)
             angles = np.random.default_rng(0).uniform(0, 2 * np.pi, len(template_wires))

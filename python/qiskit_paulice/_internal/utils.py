@@ -19,7 +19,11 @@ from qiskit.quantum_info import Pauli
 
 from ._internal_r import CheckPicker, NoiseModel
 from ._internal_r import PyMetric as Metric
-from .conversion import convert_to_rustiq_circuit
+from .conversion import (
+    convert_to_rustiq_circuit,
+    normalize_measured_qubits,
+    normalize_stabilizers,
+)
 
 
 def validate_terminal_measurements(circuit: QuantumCircuit) -> None:
@@ -56,30 +60,19 @@ def build_check_picker(
     measured_qubits: None | list[int] | str = None,
     check_qubits=None,
     virtual_zs=None,
+    logical_stabilizers: None | list[str] | list[Pauli] = None,
 ):
-    """Builds a rust CheckPicker object for a gicen qiskit circuit & some parameters
+    """Builds a rust CheckPicker object for a given qiskit circuit & some parameters.
+
+    ``stabilizers`` decides validity: a check may back-propagate to any product of them.
+    ``logical_stabilizers`` decides cost only: the metric protects their forward images instead
+    of those of ``stabilizers`` (see :class:`.CheckPickerStation`).
     """
-    measured_qubits = measured_qubits or []
-    stabilizers = stabilizers or []
     noise_models = noise_models or []
-    if isinstance(measured_qubits, str):
-        if measured_qubits == "all":
-            measured_qubits = list(set(range(circuit.num_qubits)))
-        else:
-            raise ValueError("Unexpected measured_qubits type")
     assert isinstance(metric, Metric), "metric should be a Metric instance"
-    if isinstance(stabilizers, str):
-        if stabilizers == "all":
-            stabilizers = [
-                "".join("Z" if q == i else "I" for i in range(circuit.num_qubits))
-                for q in set(range(circuit.num_qubits))
-            ]
-        else:
-            raise ValueError("Unexpected stabilizers type")
-    if stabilizers and isinstance(stabilizers[0], Pauli):
-        if any(s.phase for s in stabilizers):
-            raise ValueError("Pauli with phase not supported")
-        stabilizers = [s.to_label()[::-1] for s in stabilizers]
+    measured_qubits = normalize_measured_qubits(measured_qubits, circuit.num_qubits)
+    stabilizers = normalize_stabilizers(stabilizers, circuit.num_qubits)
+    logical = normalize_stabilizers(logical_stabilizers, circuit.num_qubits) or None
     if check_qubits is None:
         check_qubits = []
     if virtual_zs is None:
@@ -94,6 +87,7 @@ def build_check_picker(
         stabilizers,
         check_qubits,
         virtual_zs,
+        logical,
     )
     picker.set_evaluation_data(noise_models, metric, circuit.num_qubits)
     return picker
