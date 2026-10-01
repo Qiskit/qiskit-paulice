@@ -72,18 +72,18 @@ class FaultRates(NamedTuple):
     r"""Monte Carlo fault-rate estimates for a checked circuit, from one common sample set.
 
     Attributes:
-        harmless_rate: Joint probability that a shot is accepted *and* its error is
-            non-identity yet backpropagates to a diagonal Pauli on the circuit input, applying
-            a global phase to :math:`|0^n\rangle`. It is not conditioned on acceptance; the
-            harmless rate among accepted shots is ``harmless_rate / acceptance_rate``.
+        harmless_rate: Probability that a shot contains errors that only act on the
+            quantum state as a global phase. Harmless samples are always accepted; however,
+            this probability is not conditioned on acceptance. To condition on acceptance:
+            :math:`P(harmless|accepted) = harmless_rate / acceptance_rate`.
         harmless_stderr: Standard error of ``harmless_rate``.
-        logical_error_rate: Joint probability that a shot is accepted *and* its error flips
+        logical_error_rate: Probability that a shot is accepted *and* its error flips
             one or more payload measurement outcomes. If the circuit measures no payload
             qubit, as when its checks were found for stabilizers of the prepared state, it is
-            instead the joint probability that a shot is accepted *and* its error changes the
-            prepared state, i.e. is neither the identity nor harmless. It is not conditioned
-            on acceptance; the logical error rate among accepted shots is
-            ``logical_error_rate / acceptance_rate``.
+            instead the probability that a shot is accepted *and* its error changes the
+            prepared state. Logical errors are always accepted; however, this probability
+            is not conditioned on acceptance. To condition on acceptance:
+            :math:`logical_error_rate / acceptance_rate`.
         logical_error_stderr: Standard error of ``logical_error_rate``.
         acceptance_rate: Probability of a zero syndrome on every check.
         acceptance_stderr: Standard error of ``acceptance_rate``.
@@ -232,15 +232,10 @@ class CheckedCircuit:
         One noisy Monte Carlo sampling under ``noise_model`` yields all rates. A shot is
         *accepted* if all check syndromes are :math:`0`. An error is *harmless* if it is
         non-identity yet backpropagates to a diagonal Pauli on the input, acting as a
-        global phase on :math:`|0^n\rangle`. Every rate is estimated over all shots, not
-        only accepted ones: the *harmless rate* and *logical error rate* are the joint
-        probabilities that a shot is accepted *and* its error is harmless, or flips a payload
-        measurement outcome, respectively, and the *check trigger rate* is the probability
-        that a given check flags a non-zero syndrome. If no payload qubit is measured, an
-        error is logical when it changes the prepared state, so the harmless and logical
-        rates then sum to the probability that a shot is accepted with a non-identity error.
-        To condition the harmless or logical error rate on acceptance, divide it by the
-        acceptance rate.
+        global phase on :math:`|0^n\rangle`. A **logical error** is a sample corrupted by
+        a logical error that evaded the checks. The *check trigger rate* is the probability
+        that a given check flags a non-zero syndrome. All fault rates are with respect to
+        all shots taken.
 
         Args:
             noise_model: Noise to apply during Monte Carlo sampling.
