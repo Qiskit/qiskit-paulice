@@ -72,15 +72,18 @@ class FaultRates(NamedTuple):
     r"""Monte Carlo fault-rate estimates for a checked circuit, from one common sample set.
 
     Attributes:
-        harmless_rate: Fraction of accepted shots whose error is non-identity yet
-            backpropagates to a diagonal Pauli on the circuit input, applying a global phase
-            to :math:`|0^n\rangle`.
+        harmless_rate: Probability that a shot contains errors that only act on the
+            quantum state as a global phase. Harmless samples are always accepted; however,
+            this probability is not conditioned on acceptance. To condition on acceptance:
+            :math:`P(harmless|accepted) = harmless_rate / acceptance_rate`.
         harmless_stderr: Standard error of ``harmless_rate``.
-        logical_error_rate: Fraction of accepted shots whose error flips one or more
-            payload measurement outcomes. If the circuit measures no payload qubit, as when
-            its checks were found for stabilizers of the prepared state, it is instead the
-            fraction of accepted shots whose error changes the prepared state, i.e. is neither
-            the identity nor harmless.
+        logical_error_rate: Probability that a shot is accepted *and* its error flips
+            one or more payload measurement outcomes. If the circuit measures no payload
+            qubit, as when its checks were found for stabilizers of the prepared state, it is
+            instead the probability that a shot is accepted *and* its error changes the
+            prepared state. Logical errors are always accepted; however, this probability
+            is not conditioned on acceptance. To condition on acceptance:
+            :math:`logical_error_rate / acceptance_rate`.
         logical_error_stderr: Standard error of ``logical_error_rate``.
         acceptance_rate: Probability of a zero syndrome on every check.
         acceptance_stderr: Standard error of ``acceptance_rate``.
@@ -229,12 +232,10 @@ class CheckedCircuit:
         One noisy Monte Carlo sampling under ``noise_model`` yields all rates. A shot is
         *accepted* if all check syndromes are :math:`0`. An error is *harmless* if it is
         non-identity yet backpropagates to a diagonal Pauli on the input, acting as a
-        global phase on :math:`|0^n\rangle`. The *harmless rate* and *logical error rate*
-        are the fractions of accepted shots whose error is harmless, or flips a payload
-        measurement outcome; the *check trigger rate* is the fraction of all shots a given
-        check flags with a non-zero syndrome. If no payload qubit is measured, an error is
-        logical when it changes the prepared state, so the harmless and logical rates then
-        partition the accepted non-identity errors.
+        global phase on :math:`|0^n\rangle`. A **logical error** is a sample corrupted by
+        a logical error that evaded the checks. The *check trigger rate* is the probability
+        that a given check flags a non-zero syndrome. All fault rates are with respect to
+        all shots taken.
 
         Args:
             noise_model: Noise to apply during Monte Carlo sampling.
@@ -245,8 +246,8 @@ class CheckedCircuit:
             The estimated fault rates with their standard errors.
 
         Raises:
-            ValueError: The noise model is empty or unsupported, :attr:`circuit` contains a
-                non-Clifford instruction, or no sampled configuration was accepted.
+            ValueError: The noise model is empty or unsupported, or :attr:`circuit` contains
+                a non-Clifford instruction.
         """
         model = _convert_noise_model(noise_model, self.circuit)
         rates, x_img, z_img, full_clifford = _fault_channels(self.circuit, model)
@@ -288,33 +289,27 @@ class CheckedCircuit:
             np.bitwise_xor.at(outcome, shot, outcome_rows[index])
 
         accepted = ~syndrome.any(axis=1)
-        num_accepted = int(accepted.sum())
-        if num_accepted == 0:
-            raise ValueError(
-                f"None of the {shots} sampled fault configurations was accepted; increase "
-                "shots or reduce the noise strength."
-            )
         nonidentity = (back_x | back_z).any(axis=1)
-        harmless = (accepted & nonidentity & ~back_x.any(axis=1)).sum() / num_accepted
+        harmless = (accepted & nonidentity & ~back_x.any(axis=1)).mean()
         # Without payload measurements there is no outcome to flip; an error is then logical
         # iff it changes the state, i.e. its back-propagated image is not diagonal.
         flips = outcome.any(axis=1) if payload.size else back_x.any(axis=1)
-        logical = (accepted & flips).sum() / num_accepted
-        acceptance = num_accepted / shots
+        logical = (accepted & flips).mean()
+        acceptance = accepted.mean()
         triggers = syndrome.mean(axis=0)
 
-        def _stderr(probability: float, count: int) -> float:
-            return float(np.sqrt(probability * (1 - probability) / count))
+        def _stderr(probability: float) -> float:
+            return float(np.sqrt(probability * (1 - probability) / shots))
 
         return FaultRates(
             harmless_rate=float(harmless),
-            harmless_stderr=_stderr(harmless, num_accepted),
+            harmless_stderr=_stderr(harmless),
             logical_error_rate=float(logical),
-            logical_error_stderr=_stderr(logical, num_accepted),
+            logical_error_stderr=_stderr(logical),
             acceptance_rate=float(acceptance),
-            acceptance_stderr=_stderr(acceptance, shots),
+            acceptance_stderr=_stderr(acceptance),
             check_trigger_rates=tuple(float(p) for p in triggers),
-            check_trigger_stderrs=tuple(_stderr(float(p), shots) for p in triggers),
+            check_trigger_stderrs=tuple(_stderr(float(p)) for p in triggers),
             shots=shots,
         )
 
