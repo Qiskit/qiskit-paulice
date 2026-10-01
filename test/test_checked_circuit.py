@@ -549,8 +549,8 @@ class TestEstimateFaultRates(unittest.TestCase):
 
     def test_without_payload_measurements_logical_means_state_changing(self):
         """Checks found for stabilizers leave the payload unmeasured; a logical error is then
-        any accepted error that changes the state, and the harmless and logical rates partition
-        the accepted non-identity errors (checked against the acceptance rate)."""
+        any accepted error that changes the state, and the harmless and logical rates sum to at
+        most the acceptance rate."""
         bare = QuantumCircuit(3)
         for _ in range(2):
             bare.h(0)

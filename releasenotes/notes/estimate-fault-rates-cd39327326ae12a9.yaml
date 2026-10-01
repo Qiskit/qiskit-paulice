@@ -3,5 +3,4 @@ features:
   - |
     Added the new :meth:`qiskit_paulice.checked_circuit.CheckedCircuit.estimate_fault_rates` method for
     calculating fault rate statistics via Monte Carlo sampling. Every rate is a fraction of all
-    sampled shots; divide the harmless and logical error rates by the acceptance rate to condition
-    them on acceptance.
+    sampled shots.
