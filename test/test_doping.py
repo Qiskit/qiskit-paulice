@@ -130,6 +130,16 @@ def _syndrome_values(checked: CheckedCircuit, circuit: QuantumCircuit) -> list[f
     return values
 
 
+def _with_fault(circuit: QuantumCircuit, position: int, qubit: int, pauli: str) -> QuantumCircuit:
+    """A copy of ``circuit`` with the gate ``pauli`` on ``qubit`` before instruction ``position``."""
+    faulty = circuit.copy_empty_like()
+    for index, inst in enumerate(circuit.data):
+        if index == position:
+            getattr(faulty, pauli)(qubit)
+        faulty.append(inst)
+    return faulty
+
+
 def _checked_circuit(mode="measurements") -> CheckedCircuit:
     """A small checked Clifford circuit with one spacetime Pauli check."""
     circuit = QuantumCircuit(3)
@@ -442,6 +452,40 @@ class TestCheckedCircuitDoping(unittest.TestCase):
                     np.testing.assert_allclose(probabilities[0], probabilities[1], atol=1e-10)
                     self.assertFalse(np.allclose(probabilities[0], undoped[0], atol=1e-6))
             np.testing.assert_allclose(undoped[0], undoped[1], atol=1e-10)
+
+    def test_faults_flip_same_syndromes(self):
+        """Every single-qubit Pauli fault flips the same checks with or without doping.
+
+        Post-selection statistics under Pauli noise therefore do not depend on the doping.
+        """
+        circuit = _paper_ansatz(4, seed=2)
+        circuit.measure_all()
+        noise = NoiseModel(gate_noise=1e-3, readout_noise=1e-2)
+        for mode in _MODES:
+            checked = _add_pauli_checks_in(mode, circuit, [1, 2], noise, seed=0)[-1]
+            # At zero angles the template is the undoped circuit, with the same positions.
+            template, doped_wires = checked.dope(angle=None)
+            undoped = template.assign_parameters(np.zeros(len(doped_wires)))
+            angles = np.random.default_rng(0).uniform(0, 2 * np.pi, len(doped_wires))
+            doped = template.assign_parameters(angles)
+            # Each qubit's input wire, then the wire after every gate on each of its qubits.
+            wires = [(0, qubit) for qubit in range(template.num_qubits)]
+            for index, inst in enumerate(template.data):
+                if inst.operation.name not in ("measure", "barrier"):
+                    wires += [(index + 1, template.find_bit(q).index) for q in inst.qubits]
+            clean = _syndrome_values(checked, undoped)
+            detected = 0
+            for (position, qubit), pauli in itertools.product(wires, "xyz"):
+                expected = _syndrome_values(checked, _with_fault(undoped, position, qubit, pauli))
+                actual = _syndrome_values(checked, _with_fault(doped, position, qubit, pauli))
+                message = f"{mode}: {pauli} on qubit {qubit} before instruction {position}"
+                np.testing.assert_allclose(np.abs(expected), 1.0, atol=1e-10, err_msg=message)
+                np.testing.assert_allclose(actual, expected, atol=1e-10, err_msg=message)
+                detected += not np.allclose(expected, clean)
+            with self.subTest(mode=mode):
+                self.assertGreater(len(doped_wires), 0)
+                self.assertGreater(detected, 0)
+                self.assertLess(detected, 3 * len(wires))
 
     def test_dope_and_box(self):
         """``box=True`` boxes the doped circuit like the checked circuit, keeping its rotations."""
