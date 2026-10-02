@@ -5,7 +5,6 @@
 // This code is licensed under the Apache License, Version 2.0. You may
 // obtain a copy of this license in the LICENSE.txt file in the root directory
 // of this source tree or at https://www.apache.org/licenses/LICENSE-2.0.
-//
 // Any modifications or derivative works of this code must retain this
 // copyright notice, and modified files need to carry a notice indicating
 // that they have been altered from the originals.
@@ -43,6 +42,22 @@ pub fn get_last_wire(circuit: &CliffordCircuit, qubit: usize) -> Wire {
     }
     Wire::Input(qubit)
 }
+
+/// Returns the last 2-qubit gate wire for a qubit, or the input wire if no 2-qubit gate acts on it.
+/// This is used for placing readout error generators on the correct wire so that
+/// they are properly accounted for in the 2Q-gate-restricted cumulant maps.
+pub fn get_last_2q_wire(circuit: &CliffordCircuit, qubit: usize) -> Wire {
+    for (gi, gate) in circuit.gates.iter().enumerate().rev() {
+        if gate.arity() == 2 && get_qbits(gate).contains(&qubit) {
+            return Wire::GateWire(
+                gi,
+                get_qbits(gate).iter().position(|&q| q == qubit).unwrap(),
+            );
+        }
+    }
+    Wire::Input(qubit)
+}
+
 pub fn nullspace(matrix: &[Vec<bool>]) -> Vec<Vec<bool>> {
     let mut matrix = matrix.to_vec();
     let mut witness = vec![vec![false; matrix.len()]; matrix.len()];
@@ -87,6 +102,7 @@ pub fn mult_f2(left: &Vec<Vec<bool>>, right: &Vec<Vec<bool>>) -> Vec<Vec<bool>> 
     }
     result
 }
+
 #[allow(clippy::ptr_arg)]
 pub fn transpose(matrix: &Vec<Vec<bool>>) -> Vec<Vec<bool>> {
     let mut result = vec![vec![false; matrix.len()]; matrix[0].len()];
