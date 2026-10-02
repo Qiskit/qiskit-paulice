@@ -5,7 +5,6 @@
 // This code is licensed under the Apache License, Version 2.0. You may
 // obtain a copy of this license in the LICENSE.txt file in the root directory
 // of this source tree or at https://www.apache.org/licenses/LICENSE-2.0.
-//
 // Any modifications or derivative works of this code must retain this
 // copyright notice, and modified files need to carry a notice indicating
 // that they have been altered from the originals.
@@ -66,7 +65,9 @@ impl Default for UniformDepolarizing {
 impl NoiseModelLike for UniformDepolarizing {
     fn get_generators(&self, circuit: &CliffordCircuit) -> (Vec<NoiseGenerator>, CliffordCircuit) {
         let mut generators = Vec::new();
-        let rate = -1. / 4. * (1. - 4. * self.depol_p / 15.).ln();
+        // Correct rate for 15 equal generators: total error prob = (15/16)(1 - exp(-16*rate))
+        // The exact rate is -ln(1 - 16*d/15)/16 where d = depol_p = 5p/4
+        let rate = -1. / 16. * (1. - 16. * self.depol_p / 15.).ln();
 
         for (index, gate) in circuit.gates.iter().enumerate() {
             if gate.arity() == 2 {
