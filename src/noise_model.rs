@@ -13,7 +13,7 @@
 use super::circuit_building::get_layered_circuit;
 use super::scheduling::get_alap_delays;
 use super::sparse_pauli::SparsePauli;
-use super::utils::get_last_wire;
+use super::utils::{get_last_2q_wire, get_last_wire};
 use super::wire::Wire;
 use rustiq_core::structures::{CliffordCircuit, CliffordGate};
 use std::collections::{HashMap, HashSet};
@@ -450,7 +450,7 @@ impl NoiseModelLike for Readout {
         let mut generators = Vec::new();
         let rate = -1. / 2. * (1. - 2. * self.error_rate).ln();
         for qbit in 0..circuit.nqbits {
-            let wire = get_last_wire(circuit, qbit);
+            let wire = get_last_2q_wire(circuit, qbit);
             let mut pauli = SparsePauli::new();
             pauli.update(wire.clone(), 1);
             generators.push((pauli.clone(), rate));
