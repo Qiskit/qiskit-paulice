@@ -5,7 +5,6 @@
 // This code is licensed under the Apache License, Version 2.0. You may
 // obtain a copy of this license in the LICENSE.txt file in the root directory
 // of this source tree or at https://www.apache.org/licenses/LICENSE-2.0.
-//
 // Any modifications or derivative works of this code must retain this
 // copyright notice, and modified files need to carry a notice indicating
 // that they have been altered from the originals.
@@ -21,6 +20,7 @@ use rustiq_core::structures::{CliffordCircuit, PauliLike, PauliSet};
 /// Elements of the group are accessible through a morphism F_2^n -> G
 pub struct CheckGroup {
     pub generators: Vec<(SparsePauli, Vec<usize>)>,
+    measured_qubits: Vec<usize>,
 }
 
 impl CheckGroup {
@@ -72,7 +72,10 @@ impl CheckGroup {
             })
             .collect();
 
-        Self { generators }
+        Self {
+            generators,
+            measured_qubits: measured_qubits.to_vec(),
+        }
     }
 
     pub fn get_check(&self, coordinates: &[bool]) -> (SparsePauli, Vec<usize>) {
@@ -90,6 +93,11 @@ impl CheckGroup {
                 }
             }
         }
+        // Map virtual_zs from measured_qubits indices to actual qubit indices
+        let virtual_zs: Vec<usize> = virtual_zs
+            .into_iter()
+            .map(|idx| self.measured_qubits[idx])
+            .collect();
         (check, virtual_zs)
     }
 
