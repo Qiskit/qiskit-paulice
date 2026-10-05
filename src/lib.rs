@@ -17,6 +17,7 @@ pub mod check_group;
 pub mod check_picker;
 pub mod circuit_building;
 pub mod coverage;
+pub mod cumulant_table;
 pub mod metric;
 pub mod noise_model;
 pub mod pauli;
