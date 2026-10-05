@@ -40,10 +40,6 @@ pub fn get_wires(gate: &CliffordGate, gate_index: usize) -> Vec<Wire> {
         .collect()
 }
 
-pub fn get_last_wire(circuit: &CliffordCircuit, qubit: usize) -> Wire {
-    last_wires(circuit)[qubit].clone()
-}
-
 /// Final wire on each qubit line after propagating through `circuit` once.
 pub fn last_wires(circuit: &CliffordCircuit) -> Vec<Wire> {
     let mut out: Vec<Wire> = (0..circuit.nqbits).map(Wire::Input).collect();
