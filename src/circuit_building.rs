@@ -161,8 +161,13 @@ impl<'a> Layer<'a> {
     fn to_circuit(&self) -> (CliffordCircuit, usize) {
         let li = self.layer_index();
         let mut circuit = CliffordCircuit::new(self.nqubits);
-        for (a, b) in self.czs.iter() {
-            circuit.gates.push(CliffordGate::CZ(*a, *b));
+        // Iterate the CZ set in sorted order: HashSet iteration order varies
+        // per process, and the emitted gate order determines gate indices in
+        // the relayered circuit (hence generator wires and gamma values).
+        let mut czs: Vec<_> = self.czs.iter().copied().collect();
+        czs.sort_unstable();
+        for (a, b) in czs {
+            circuit.gates.push(CliffordGate::CZ(a, b));
         }
         circuit.gates.extend(self.singles.iter());
         (circuit, li)
