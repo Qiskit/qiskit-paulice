@@ -176,6 +176,7 @@ impl GeneratorTable {
 
 #[cfg(test)]
 mod generator_table_tests {
+    use super::super::coverage::Coverage;
     use super::super::noise_generators::build_noise_generators;
     use super::super::noise_model::{
         GateDescription, GateWiseNoiseModel, Idling, LayerDescription, LayeredNoiseModel, Readout,
@@ -280,5 +281,24 @@ mod generator_table_tests {
                 assert_eq!(got_bits, want_bits, "rates (trial {trial})");
             }
         }
+    }
+
+    #[test]
+    fn gamma_score_matches_coverage() {
+        let circuit = toy_circuit();
+        let models = vec![
+            UNoiseModel::UniformDepolarizing(UniformDepolarizing::new(0.01)),
+            UNoiseModel::Readout(Readout::new(0.02)),
+        ];
+        let table = GeneratorTable::build(&circuit, &models);
+        let mut coverage = Coverage::new(&circuit, &models);
+        coverage.set_check_cumulants(&[0], &[vec![]]);
+        coverage.set_logical_cumulants(&[], &[1, 2]);
+        let expected = coverage.gamma_apx();
+        let got = table.gamma_score(
+            coverage.post_selected_cumulants(),
+            coverage.logical_cumulants(),
+        );
+        assert!((expected - got).abs() < 1e-12, "{expected} vs {got}");
     }
 }

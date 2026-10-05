@@ -1,0 +1,16 @@
+---
+features:
+  - |
+    :func:`qiskit_paulice.add_pauli_checks` scores candidate checks faster with
+    ``cost="gamma"``. Noise generators and propagated cumulants are now stored in
+    packed tables instead of one hash map per Pauli, so building and scoring them no
+    longer dominates the search.
+fixes:
+  - |
+    :func:`qiskit_paulice.add_pauli_checks` with ``cost="gamma"`` and a fixed ``seed``
+    now returns bit-identical costs from one run to the next. Previously the order of
+    gates within a layer and of layered-noise entries depended on hash iteration
+    order, and the gamma sum depended on thread scheduling, so costs could differ in
+    the last bits and near-ties could pick different checks between runs. Because the
+    order is now fixed, a near-tie may resolve to a different check than in earlier
+    releases.
