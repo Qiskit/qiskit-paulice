@@ -13,6 +13,11 @@
 use rustiq_core::structures::{CliffordCircuit, CliffordGate};
 use std::cmp::{Ord, Ordering};
 
+/// Size of the dense wire-id range a circuit can produce. See `Wire::dense_id`.
+pub fn wire_id_space(circuit: &CliffordCircuit) -> usize {
+    circuit.nqbits + 2 * circuit.gates.len()
+}
+
 /// Struct representing a wire in a circuit
 /// A wire is either an input wire (indexed by qbit) or a gate wire (indexed by gate index and qbit)
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
@@ -62,6 +67,20 @@ impl Wire {
             ),
         }
     }
+    /// Dense index of this wire inside a circuit of `nqbits` qubits.
+    ///
+    /// Inputs take `[0, nqbits)`, and the (at most two) output wires of gate
+    /// `g` take `nqbits + 2g` and `nqbits + 2g + 1`. Packing wires into a
+    /// contiguous range lets the coverage tables index columns with an array
+    /// lookup instead of hashing a `Wire`, which is what the inner loop of
+    /// gamma scoring does for every generator term.
+    pub fn dense_id(&self, nqbits: usize) -> usize {
+        match self {
+            Self::Input(q) => *q,
+            Self::GateWire(gi, qi) => nqbits + 2 * gi + qi,
+        }
+    }
+
     /// Returns the global qbit index of the wire
     pub fn get_qbit(&self, circuit: &CliffordCircuit, offset: usize) -> usize {
         match self {
