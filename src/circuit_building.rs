@@ -168,13 +168,22 @@ impl<'a> Layer<'a> {
         (circuit, li)
     }
 
+    /// The layer type this layer belongs to, i.e. whose noise it inherits.
+    ///
+    /// Layers are *filled* by subset (`can_insert` accepts a gate as long as
+    /// the resulting CZ set stays inside some layer type), so a layer can end
+    /// up holding only part of its type -- when the circuit simply never
+    /// supplies the type's other gates, for instance. An exact match is
+    /// therefore preferred but not required; falling back to the enclosing type
+    /// keeps the two halves of the layering consistent.
     fn layer_index(&self) -> usize {
-        for (i, t) in self.layer_types.iter().enumerate() {
-            if self.czs == *t {
-                return i;
-            }
+        if let Some(i) = self.layer_types.iter().position(|t| self.czs == *t) {
+            return i;
         }
-        panic!("Layer {:?} does not match any known layer type", self.czs);
+        self.layer_types
+            .iter()
+            .position(|t| self.czs.is_subset(t))
+            .unwrap_or_else(|| panic!("Layer {:?} does not match any known layer type", self.czs))
     }
 }
 
@@ -319,5 +328,23 @@ mod check_building_tests {
         }
         let layers = get_layered_circuit(circuit, &layer_types);
         println!("{:?}", layers);
+    }
+
+    #[test]
+    fn partially_filled_layer_uses_enclosing_type() {
+        let layer_types = vec![
+            HashSet::from([(0, 1)]),
+            HashSet::from([(0, 1), (2, 3), (4, 5)]),
+        ];
+        let mut circuit = CliffordCircuit::new(6);
+        circuit.gates.push(CliffordGate::CZ(2, 3));
+        circuit.gates.push(CliffordGate::CZ(0, 1));
+        let layers = get_layered_circuit(circuit, &layer_types);
+        assert_eq!(layers.len(), 2);
+        let (layer, layer_index) = &layers[1];
+        assert_eq!(*layer_index, Some(1));
+        assert_eq!(layer.gates.len(), 2);
+        assert!(layer.gates.contains(&CliffordGate::CZ(0, 1)));
+        assert!(layer.gates.contains(&CliffordGate::CZ(2, 3)));
     }
 }
