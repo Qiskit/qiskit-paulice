@@ -1,0 +1,14 @@
+---
+fixes:
+  - |
+    A uniform :attr:`~qiskit_paulice.noise_models.NoiseModel.gate_noise` now produces a
+    depolarizing channel whose total error probability is exactly ``5 / 4`` of the given
+    infidelity. The rate of each of its ``15`` Pauli generators was previously computed with the
+    single-qubit formula, which agrees only to first order: at an infidelity of ``0.3`` the total
+    error probability was ``0.32`` instead of ``0.375``. Costs, fault-rate estimates, and the
+    checks found with large uniform noise values can change as a result.
+upgrade:
+  - |
+    A uniform :attr:`~qiskit_paulice.noise_models.NoiseModel.gate_noise` must now lie in
+    ``[0, 0.75)``, the range on which a two-qubit depolarizing channel exists, instead of
+    ``[0, 3)``.
