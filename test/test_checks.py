@@ -415,6 +415,21 @@ class TestAddPauliChecksPermutations(unittest.TestCase):
                 _assert_variant_progression(self, result, expected_targets=[0])
                 self.assertIsInstance(result[-1].cost, float)
 
+    def test_every_method_reports_a_valid_check_support(self):
+        """Each method's ``check_support`` names the check's ancilla and is a stabilizer of the
+        output state, on a circuit that measures only some payload qubits so that qubit indices
+        differ from positions in the list of measured qubits."""
+        qc = _clifford().remove_final_measurements(inplace=False)
+        qc.add_register(ClassicalRegister(2, "meas"))
+        qc.measure([1, 2], [0, 1])
+        for method in ("windowed", "genetic", "windowed_genetic"):
+            with self.subTest(method=method):
+                final = add_pauli_checks(qc, [0, 1], _DEFAULT_NOISE, method=method, seed=0)[-1]
+                self.assertEqual(final.check_qubits, (3, 4))
+                for ancilla, support in zip(final.check_qubits, final.check_support, strict=True):
+                    self.assertIn(ancilla, support)
+                _assert_supports_are_stabilizers(self, final)
+
     def test_gate_wise_noise(self):
         """Per-edge dict noise keyed by ``(a, b)`` int pairs."""
         gate_noise = {

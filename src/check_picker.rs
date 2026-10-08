@@ -212,9 +212,13 @@ impl CheckPicker {
             .evaluate(&check, &vzs)
     }
 
-    /// Commits a check specified by its coordinates
+    /// Commits a check specified by its coordinates; with measured qubits, the stored virtual Zs
+    /// include the ancilla, as in `find_good_checks`
     pub fn commit_check_bv(&self, vec: Vec<bool>) -> Option<Self> {
-        let (check, vzs) = self.check_group.as_ref().unwrap().get_check(&vec);
+        let (check, mut vzs) = self.check_group.as_ref().unwrap().get_check(&vec);
+        if !self.logical_data.0.is_empty() {
+            vzs.push(self.check_evaluator.as_ref().unwrap().get_ancilla());
+        }
         Some(self.commit_check(check, vzs))
     }
 

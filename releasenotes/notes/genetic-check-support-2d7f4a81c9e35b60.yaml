@@ -1,0 +1,10 @@
+---
+fixes:
+  - |
+    :func:`~qiskit_paulice.checks.add_pauli_checks` with ``method="genetic"`` or
+    ``method="windowed_genetic"`` now reports the correct
+    :attr:`~qiskit_paulice.checked_circuit.CheckedCircuit.check_support`. It previously omitted
+    each check's ancilla, and when only some payload qubits were measured, listed positions in the
+    list of measured qubits instead of qubit indices, so
+    :meth:`~qiskit_paulice.checked_circuit.CheckedCircuit.get_postselection_method` computed the
+    wrong syndromes.
