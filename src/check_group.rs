@@ -20,8 +20,8 @@ use rustiq_core::structures::{CliffordCircuit, PauliLike, PauliSet};
 /// A structure giving access to a the group of valid checks on a given subset of wires of a circuit
 /// Elements of the group are accessible through a morphism F_2^n -> G
 pub struct CheckGroup {
-    /// Each generator is a Pauli on the accessible wires together with the measured qubits
-    /// (as qubit indices) whose Z outcomes complete it into a valid check.
+    /// Each generator is a Pauli on the accessible wires together with the indices of the
+    /// measured qubits whose Z outcomes, with the ancilla's, form its syndrome
     pub generators: Vec<(SparsePauli, Vec<usize>)>,
 }
 
@@ -77,8 +77,8 @@ impl CheckGroup {
         Self { generators }
     }
 
-    /// Returns the check with the given coordinates and the measured qubits whose Z outcomes
-    /// complete it (as qubit indices, the ancilla excluded)
+    /// Returns the check with the given coordinates and the indices of the measured qubits whose Z
+    /// outcomes, with the ancilla's, form its syndrome; the ancilla itself is not listed
     pub fn get_check(&self, coordinates: &[bool]) -> (SparsePauli, Vec<usize>) {
         let mut check = SparsePauli::new();
         let mut virtual_zs = Vec::new();
