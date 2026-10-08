@@ -157,7 +157,7 @@ class TestAddPauliChecksValidation(unittest.TestCase):
             (NoiseModel(gate_noise="bogus"), "Unrecognized"),
             (NoiseModel(gate_noise=True), "Unrecognized"),
             (NoiseModel(gate_noise=-1e-3), "Uniform gate_noise"),
-            (NoiseModel(gate_noise=3.0), "Uniform gate_noise"),
+            (NoiseModel(gate_noise=0.75), "Uniform gate_noise"),
             (NoiseModel(gate_noise=float("nan")), "Uniform gate_noise"),
             (NoiseModel(gate_noise=float("inf")), "Uniform gate_noise"),
             (NoiseModel(gate_noise=1e-3, readout_noise=0.5), "readout_noise"),
@@ -167,8 +167,8 @@ class TestAddPauliChecksValidation(unittest.TestCase):
                 add_pauli_checks(_clifford(), [1], noise, seed=0)
 
     def test_uniform_gate_noise_range(self):
-        """Uniform gate noise accepts any real number in [0, 3)."""
-        for gate_noise in (0, 0.0, 2.99, np.float32(1e-3), np.int64(0)):
+        """Uniform gate noise accepts any real number in [0, 0.75)."""
+        for gate_noise in (0, 0.0, 0.74, np.float32(1e-3), np.int64(0)):
             with self.subTest(gate_noise=gate_noise):
                 noise = NoiseModel(gate_noise=gate_noise, readout_noise=1e-2)
                 self.assertGreater(len(add_pauli_checks(_clifford(), [1], noise, seed=0)), 0)
