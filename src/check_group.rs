@@ -20,6 +20,8 @@ use rustiq_core::structures::{CliffordCircuit, PauliLike, PauliSet};
 /// A structure giving access to a the group of valid checks on a given subset of wires of a circuit
 /// Elements of the group are accessible through a morphism F_2^n -> G
 pub struct CheckGroup {
+    /// Each generator is a Pauli on the accessible wires together with the indices of the
+    /// measured qubits whose Z outcomes, with the ancilla's, form its syndrome
     pub generators: Vec<(SparsePauli, Vec<usize>)>,
 }
 
@@ -64,7 +66,7 @@ impl CheckGroup {
                             let (wire, p) = &all_paulis[i];
                             pauli.update(wire.clone(), *p);
                         } else {
-                            virtual_zs.push(i - all_paulis.len());
+                            virtual_zs.push(measured_qubits[i - all_paulis.len()]);
                         }
                     }
                 }
@@ -75,6 +77,8 @@ impl CheckGroup {
         Self { generators }
     }
 
+    /// Returns the check with the given coordinates and the indices of the measured qubits whose Z
+    /// outcomes, with the ancilla's, form its syndrome; the ancilla itself is not listed
     pub fn get_check(&self, coordinates: &[bool]) -> (SparsePauli, Vec<usize>) {
         let mut check = SparsePauli::new();
         let mut virtual_zs = Vec::new();
@@ -134,6 +138,13 @@ mod check_group_tests {
             &StabilizerGroup::new(Vec::new()),
         );
         assert_eq!(check_group.get_dimension(), 2);
+        // The measured qubit enters the generators by its index, 1, not by its position, 0.
+        let virtual_zs: Vec<usize> = check_group
+            .generators
+            .iter()
+            .flat_map(|(_, zs)| zs.clone())
+            .collect();
+        assert!(!virtual_zs.is_empty() && virtual_zs.iter().all(|&q| q == 1));
     }
     #[test]
     fn test_stabilizers() {
