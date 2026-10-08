@@ -15,14 +15,22 @@ use rustiq_core::routines::f2_linalg::rowop;
 use rustiq_core::structures::{CliffordCircuit, CliffordGate};
 
 pub fn get_qbits(gate: &CliffordGate) -> Vec<usize> {
+    let (qbits, arity) = gate_qbits(gate);
+    qbits[..arity].to_vec()
+}
+
+/// The qubits a gate acts on, and how many -- the allocation-free form of
+/// `get_qbits`. Walks over a circuit's gates run this once per gate, and a
+/// `Vec` each would cost more than the work being done.
+pub fn gate_qbits(gate: &CliffordGate) -> ([usize; 2], usize) {
     match gate {
-        CliffordGate::CNOT(i, j) => vec![*i, *j],
-        CliffordGate::CZ(i, j) => vec![*i, *j],
-        CliffordGate::H(i) => vec![*i],
-        CliffordGate::S(i) => vec![*i],
-        CliffordGate::Sd(i) => vec![*i],
-        CliffordGate::SqrtX(i) => vec![*i],
-        CliffordGate::SqrtXd(i) => vec![*i],
+        CliffordGate::CNOT(i, j) => ([*i, *j], 2),
+        CliffordGate::CZ(i, j) => ([*i, *j], 2),
+        CliffordGate::H(i) => ([*i, 0], 1),
+        CliffordGate::S(i) => ([*i, 0], 1),
+        CliffordGate::Sd(i) => ([*i, 0], 1),
+        CliffordGate::SqrtX(i) => ([*i, 0], 1),
+        CliffordGate::SqrtXd(i) => ([*i, 0], 1),
     }
 }
 
@@ -32,16 +40,16 @@ pub fn get_wires(gate: &CliffordGate, gate_index: usize) -> Vec<Wire> {
         .collect()
 }
 
-pub fn get_last_wire(circuit: &CliffordCircuit, qubit: usize) -> Wire {
-    for (gi, gate) in circuit.gates.iter().enumerate().rev() {
-        if get_qbits(gate).contains(&qubit) {
-            return Wire::GateWire(
-                gi,
-                get_qbits(gate).iter().position(|&q| q == qubit).unwrap(),
-            );
+/// Final wire on each qubit line after propagating through `circuit` once.
+pub fn last_wires(circuit: &CliffordCircuit) -> Vec<Wire> {
+    let mut out: Vec<Wire> = (0..circuit.nqbits).map(Wire::Input).collect();
+    for (gi, gate) in circuit.gates.iter().enumerate() {
+        let (qbits, arity) = gate_qbits(gate);
+        for (qi, q) in qbits[..arity].iter().enumerate() {
+            out[*q] = Wire::GateWire(gi, qi);
         }
     }
-    Wire::Input(qubit)
+    out
 }
 pub fn nullspace(matrix: &[Vec<bool>]) -> Vec<Vec<bool>> {
     let mut matrix = matrix.to_vec();
