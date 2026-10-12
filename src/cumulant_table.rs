@@ -13,23 +13,20 @@
 //! Bit-packed cumulant storage for `Coverage`.
 //!
 //! A cumulant records, for every wire of interest, the value of each
-//! propagated Pauli row at that wire. The legacy representation is one
-//! `SparsePauli` (a `HashMap<Wire, u8>`) per row; this table stores the same
-//! values column-wise: for each recorded wire, the X and Z bits of every row
-//! packed into `u64` words. Coverage queries (`is_covered` / `get_syndrome`)
-//! become a couple of word-level symplectic products per error wire instead of
-//! per-row hash lookups, and construction becomes bit writes instead of
-//! per-row hash inserts.
+//! propagated Pauli row at that wire. This table stores those values
+//! column-wise: for each recorded wire, the X and Z bits of every row packed
+//! into `u64` words. A coverage query (`covered_parity_any` / `syndrome`) is a
+//! couple of word-level symplectic products per error wire, and recording a
+//! column is a few bit writes.
 //!
 //! Wires are addressed by their dense id (`Wire::dense_id`), so finding a
-//! wire's column is an array index rather than a hash lookup, and the whole
-//! table is three flat allocations.
+//! wire's column is an array index, and the whole table is three flat
+//! allocations.
 //!
-//! Semantics are identical to the `SparsePauli` version: a missing wire means
-//! "identity on every row" (commutes), and a row anticommutes with an error
-//! Pauli `p` at a wire exactly when its recorded value is non-identity and
-//! different from `p` — which is the single-qubit symplectic product
-//! `x_row * z_err XOR z_row * x_err`.
+//! A missing wire means "identity on every row" (commutes), and a row
+//! anticommutes with an error Pauli `p` at a wire exactly when its recorded
+//! value is non-identity and different from `p` — which is the single-qubit
+//! symplectic product `x_row * z_err XOR z_row * x_err`.
 
 use super::sparse_pauli::SparsePauli;
 use super::wire::Wire;
@@ -115,9 +112,8 @@ impl CumulantTable {
         self.column_of_id(wire.dense_id(self.nqbits))
     }
 
-    /// Record the current value of every row at `wire`, reading qubit `qbit`
-    /// of `pset` (X part at row `qbit`, Z part at row `qbit + nqbits` —
-    /// the same accesses the legacy per-row loop performs).
+    /// Append a column for `wire` holding each row's Pauli on qubit `qbit` of
+    /// `pset`: X bit from row `qbit`, Z bit from row `qbit + nqbits`.
     pub fn record(&mut self, wire: Wire, pset: &PauliSet, qbit: usize, nqbits: usize) {
         let base = self.x_words.len();
         self.x_words.resize(base + self.nwords, 0);
@@ -138,9 +134,9 @@ impl CumulantTable {
         self.ncolumns += 1;
     }
 
-    /// Append the rows of `other` after the rows of `self` (wire union; a wire
-    /// missing from one table contributes identity rows for that table's side).
-    /// Mirrors `Vec::extend` on the legacy `Vec<SparsePauli>` representation.
+    /// Append the rows of `other` after the rows of `self`. The result has a
+    /// column for every wire of either table; a wire missing from one table
+    /// holds identity on that table's rows.
     pub fn extend(&mut self, other: CumulantTable) {
         if other.nrows == 0 {
             return;
@@ -208,8 +204,8 @@ impl CumulantTable {
     }
 
     /// XOR-combine the per-row anticommutation bits of `error` across its
-    /// wires and report whether any row ends up odd. Exactly matches the
-    /// legacy `is_covered` (parity) semantics.
+    /// wires and report whether any row ends up odd, i.e. whether some row
+    /// anticommutes with `error` as a whole.
     pub fn covered_parity_any(&self, error: &SparsePauli) -> bool {
         if self.nrows == 0 {
             return false;
@@ -234,8 +230,8 @@ impl CumulantTable {
     }
 
     /// OR-combine the per-row anticommutation bits of `error` across its
-    /// wires. Exactly matches the legacy `get_syndrome` semantics (one bool
-    /// per row: does any wire of the error anticommute with that row).
+    /// wires: one bool per row, true when any wire of the error anticommutes
+    /// with that row.
     pub fn syndrome(&self, error: &SparsePauli) -> Vec<bool> {
         let mut acc = vec![0u64; self.nwords];
         for (w, p) in error.paulis.iter() {

@@ -44,7 +44,7 @@ pub trait GeneratorSink {
     }
 }
 
-/// Collects generators into the legacy `Vec<(SparsePauli, rate)>` form.
+/// Collects generators as a `Vec<(SparsePauli, rate)>`.
 struct SparseSink {
     generators: Vec<NoiseGenerator>,
 }

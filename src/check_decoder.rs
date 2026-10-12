@@ -114,9 +114,6 @@ impl CheckDecoder {
             .filter(|(w, _)| w != middle_wire && w != other_wire)
             .cloned()
             .collect();
-        // Same rows, in the same order, as filtering by `actual_paulis.contains`.
-        // The Pauli list has unique entries, so comparing the two excluded wires
-        // directly avoids a quadratic membership scan.
         let restricted_b_matrix: Vec<_> = self
             .b_matrix
             .iter()

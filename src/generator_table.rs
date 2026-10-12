@@ -12,12 +12,10 @@
 
 //! Flat storage for the noise generators used in coverage scoring.
 //!
-//! A generator is a Pauli on a handful of wires plus a rate. The legacy form
-//! is one `SparsePauli` (a `HashMap`) per generator, which for a realistic
-//! circuit means tens of thousands of small hash maps rebuilt for every
-//! candidate check. This table holds the same data as four flat vectors in
-//! CSR form -- rates, term offsets, dense wire ids, Paulis -- so building it
-//! costs a few pushes per generator and scoring costs an array index per term.
+//! A generator is a Pauli on a handful of wires plus a rate. This table holds
+//! every generator of a circuit as four flat vectors in CSR form -- rates,
+//! term offsets, dense wire ids, Paulis -- so building it costs a few pushes
+//! per generator and scoring costs an array index per term.
 
 use super::cumulant_table::{CumulantTable, pauli_xz_bits};
 use super::noise_generators::{GeneratorSink, emit_generators};

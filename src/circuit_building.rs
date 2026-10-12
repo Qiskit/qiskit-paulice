@@ -161,9 +161,7 @@ impl<'a> Layer<'a> {
     fn to_circuit(&self) -> (CliffordCircuit, usize) {
         let li = self.layer_index();
         let mut circuit = CliffordCircuit::new(self.nqubits);
-        // Iterate the CZ set in sorted order: HashSet iteration order varies
-        // per process, and the emitted gate order determines gate indices in
-        // the relayered circuit (hence generator wires and gamma values).
+        // Unpack the CZs into a sorted Vec so the gate order is deterministic.
         let mut czs: Vec<_> = self.czs.iter().copied().collect();
         czs.sort_unstable();
         for (a, b) in czs {
@@ -173,14 +171,9 @@ impl<'a> Layer<'a> {
         (circuit, li)
     }
 
-    /// The layer type this layer belongs to, i.e. whose noise it inherits.
-    ///
-    /// Layers are *filled* by subset (`can_insert` accepts a gate as long as
-    /// the resulting CZ set stays inside some layer type), so a layer can end
-    /// up holding only part of its type -- when the circuit simply never
-    /// supplies the type's other gates, for instance. An exact match is
-    /// therefore preferred but not required; falling back to the enclosing type
-    /// keeps the two halves of the layering consistent.
+    /// Index of the noise layer this circuit layer inherits noise from: the
+    /// noise layer with the same edges if one exists, else the first noise
+    /// layer containing its edges (`can_insert` admits any subset of one).
     fn layer_index(&self) -> usize {
         if let Some(i) = self.layer_types.iter().position(|t| self.czs == *t) {
             return i;
@@ -188,7 +181,7 @@ impl<'a> Layer<'a> {
         self.layer_types
             .iter()
             .position(|t| self.czs.is_subset(t))
-            .unwrap_or_else(|| panic!("Layer {:?} does not match any known layer type", self.czs))
+            .unwrap_or_else(|| panic!("Layer {:?} is not contained in any noise layer", self.czs))
     }
 }
 
@@ -336,7 +329,7 @@ mod check_building_tests {
     }
 
     #[test]
-    fn partially_filled_layer_uses_enclosing_type() {
+    fn partially_filled_layer_uses_enclosing_noise_layer() {
         let layer_types = vec![
             HashSet::from([(0, 1)]),
             HashSet::from([(0, 1), (2, 3), (4, 5)]),
