@@ -676,14 +676,14 @@ class TestEstimateFaultRates(unittest.TestCase):
         with self.assertRaises(ValueError):
             replace(checked, circuit=non_clifford).estimate_fault_rates(NoiseModel(gate_noise=1e-3))
         with self.assertRaisesRegex(ValueError, "Uniform gate_noise"):
-            checked.estimate_fault_rates(NoiseModel(gate_noise=3.0))
+            checked.estimate_fault_rates(NoiseModel(gate_noise=0.75))
         with self.assertRaisesRegex(ValueError, "non-finite or negative"):
             checked.estimate_fault_rates(NoiseModel(gate_noise={(0, 1): [("XX", -1e-3)]}))
 
     def test_no_accepted_shot(self):
         """A sample with every shot rejected gives zero harmless and logical rates."""
         checked = self._checked()
-        noise = NoiseModel(gate_noise=2.9, readout_noise=0.49)
+        noise = NoiseModel(gate_noise=0.74, readout_noise=0.49)
         for seed in range(60):  # each single shot is rejected with probability ~1/2
             estimate = checked.estimate_fault_rates(noise, shots=1, seed=seed)
             if estimate.acceptance_rate == 0:
@@ -720,6 +720,25 @@ class TestFaultChannels(unittest.TestCase):
         self.assertEqual(x_img.sum(), 3)
         self.assertTrue((x_img.sum(axis=0) == 1).all())
         self.assertFalse(z_img.any())
+
+    def test_uniform_gate_noise_is_depolarizing(self):
+        """Uniform gate noise is a depolarizing channel with error probability 5/4 the infidelity."""
+        circuit = QuantumCircuit(2)
+        circuit.cz(0, 1)
+        for infidelity in (1e-3, 0.3, 0.7):
+            with self.subTest(infidelity=infidelity):
+                rates, x_img, z_img, _ = _fault_channels(
+                    circuit, _RustNoiseModel.uniform_depolarizing(infidelity)
+                )
+                # One generator per non-identity two-qubit Pauli, all with the same rate.
+                self.assertEqual(len(rates), 15)
+                self.assertEqual(len({(*x, *z) for x, z in zip(x_img, z_img, strict=True)}), 15)
+                np.testing.assert_allclose(rates, rates[0])
+                # Every non-identity Pauli anticommutes with 8 of the 15 generators, so the
+                # channel's Pauli fidelity is exp(-16 r); a depolarizing channel with total
+                # error probability d has 1 - 16 d / 15.
+                error_probability = 15 / 16 * (1 - np.exp(-16 * rates[0]))
+                self.assertAlmostEqual(error_probability, 5 * infidelity / 4)
 
 
 class TestCoverageConsistency(unittest.TestCase):

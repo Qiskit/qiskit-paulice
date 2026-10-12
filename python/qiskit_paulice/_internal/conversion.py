@@ -285,9 +285,9 @@ def convert_noise_model(noise_model, circuit: QuantumCircuit) -> RustNoiseModel 
     if gate_noise is None or gate_noise == {}:
         model = None
     elif isinstance(gate_noise, Real) and not isinstance(gate_noise, bool):
-        # The Rust rate -ln(1 - p/3)/4 is finite and non-negative only for p in [0, 3).
-        if not 0 <= gate_noise < 3:
-            raise ValueError(f"Uniform gate_noise must lie in [0, 3), not {gate_noise!r}.")
+        # The Rust rate -ln(1 - 4p/3)/16 is finite and non-negative only for p in [0, 0.75).
+        if not 0 <= gate_noise < 0.75:
+            raise ValueError(f"Uniform gate_noise must lie in [0, 0.75), not {gate_noise!r}.")
         model = RustNoiseModel.uniform_depolarizing(float(gate_noise))
     elif isinstance(first_key, tuple) and first_key and isinstance(first_key[0], tuple):
         if any(inst.operation.name == "cx" for inst in circuit.data):
