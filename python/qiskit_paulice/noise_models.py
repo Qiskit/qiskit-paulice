@@ -26,8 +26,7 @@ UniformGateNoise = float
 """An average gate infidelity for every 2-qubit gate.
 
 A depolarizing channel is applied after each 2-qubit gate. Each of the ``15`` non-identity
-2-qubit Paulis occurs with the same probability, and the total probability that a gate suffers
-any Pauli error is ``5 / 4`` of the infidelity, so the value must lie in ``[0, 0.75)``.
+2-qubit Paulis occurs with the same probability.
 """
 
 LayeredGateNoise = dict[tuple[tuple[int, int], ...], list[tuple[Pauli | str, float]]]
