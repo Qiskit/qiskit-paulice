@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    Fixed a panic ("does not match any known layer type") with layered gate noise when
+    a layer of the circuit holds only some of the two-qubit gates of a noise layer. Such
+    a layer now takes the noise of the noise layer that contains it, choosing the first
+    in sorted order if several do.

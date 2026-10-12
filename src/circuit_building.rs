@@ -161,20 +161,27 @@ impl<'a> Layer<'a> {
     fn to_circuit(&self) -> (CliffordCircuit, usize) {
         let li = self.layer_index();
         let mut circuit = CliffordCircuit::new(self.nqubits);
-        for (a, b) in self.czs.iter() {
-            circuit.gates.push(CliffordGate::CZ(*a, *b));
+        // Unpack the CZs into a sorted Vec so the gate order is deterministic.
+        let mut czs: Vec<_> = self.czs.iter().copied().collect();
+        czs.sort_unstable();
+        for (a, b) in czs {
+            circuit.gates.push(CliffordGate::CZ(a, b));
         }
         circuit.gates.extend(self.singles.iter());
         (circuit, li)
     }
 
+    /// Index of the noise layer this circuit layer inherits noise from: the
+    /// noise layer with the same edges if one exists, else the first noise
+    /// layer containing its edges (`can_insert` admits any subset of one).
     fn layer_index(&self) -> usize {
-        for (i, t) in self.layer_types.iter().enumerate() {
-            if self.czs == *t {
-                return i;
-            }
+        if let Some(i) = self.layer_types.iter().position(|t| self.czs == *t) {
+            return i;
         }
-        panic!("Layer {:?} does not match any known layer type", self.czs);
+        self.layer_types
+            .iter()
+            .position(|t| self.czs.is_subset(t))
+            .unwrap_or_else(|| panic!("Layer {:?} is not contained in any noise layer", self.czs))
     }
 }
 
@@ -319,5 +326,23 @@ mod check_building_tests {
         }
         let layers = get_layered_circuit(circuit, &layer_types);
         println!("{:?}", layers);
+    }
+
+    #[test]
+    fn partially_filled_layer_uses_enclosing_noise_layer() {
+        let layer_types = vec![
+            HashSet::from([(0, 1)]),
+            HashSet::from([(0, 1), (2, 3), (4, 5)]),
+        ];
+        let mut circuit = CliffordCircuit::new(6);
+        circuit.gates.push(CliffordGate::CZ(2, 3));
+        circuit.gates.push(CliffordGate::CZ(0, 1));
+        let layers = get_layered_circuit(circuit, &layer_types);
+        assert_eq!(layers.len(), 2);
+        let (layer, layer_index) = &layers[1];
+        assert_eq!(*layer_index, Some(1));
+        assert_eq!(layer.gates.len(), 2);
+        assert!(layer.gates.contains(&CliffordGate::CZ(0, 1)));
+        assert!(layer.gates.contains(&CliffordGate::CZ(2, 3)));
     }
 }

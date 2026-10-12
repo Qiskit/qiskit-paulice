@@ -11,9 +11,9 @@
 // that they have been altered from the originals.
 
 use super::circuit_building::get_layered_circuit;
+use super::noise_generators::GeneratorSink;
 use super::scheduling::get_alap_delays;
 use super::sparse_pauli::SparsePauli;
-use super::utils::get_last_wire;
 use super::wire::Wire;
 use rustiq_core::structures::{CliffordCircuit, CliffordGate};
 use std::collections::{HashMap, HashSet};
@@ -27,6 +27,63 @@ pub type GateDescription = HashMap<(usize, usize), Vec<((u8, u8), f64)>>;
 
 pub trait NoiseModelLike {
     fn get_generators(&self, circuit: &CliffordCircuit) -> (Vec<NoiseGenerator>, CliffordCircuit);
+
+    /// Emits the same generators as `get_generators`, in the same order, but
+    /// without building a `SparsePauli` per generator. Returns the rewritten
+    /// circuit if the model rewrites one, and `None` when it leaves the circuit
+    /// alone -- most models do, and cloning a few thousand gates per candidate
+    /// check just to hand back an identical circuit is pure waste.
+    ///
+    /// Models whose generator lists are large enough for the per-generator
+    /// allocation to matter override this; the default routes through
+    /// `get_generators`, so a model only needs the override if it is hot.
+    fn emit_generators(
+        &self,
+        circuit: &CliffordCircuit,
+        sink: &mut dyn GeneratorSink,
+    ) -> Option<CliffordCircuit> {
+        let (generators, new_circuit) = self.get_generators(circuit);
+        for (pauli, rate) in generators.iter() {
+            sink.push_sparse(pauli, *rate);
+        }
+        Some(new_circuit)
+    }
+
+    /// Rough `(generators, terms)` this model will emit for `circuit`, used
+    /// only to pre-size the sink's buffers. Overestimating is harmless;
+    /// the default promises nothing.
+    fn generator_hint(&self, _circuit: &CliffordCircuit) -> (usize, usize) {
+        (0, 0)
+    }
+}
+
+/// Number of 2-qubit gates, which is what most models scale with.
+fn _count_two_qubit(circuit: &CliffordCircuit) -> usize {
+    circuit.gates.iter().filter(|g| g.arity() == 2).count()
+}
+
+/// Emits a generator supported on the two output wires of one gate, dropping
+/// identity factors and keeping ascending wire order -- the normalisation
+/// `SparsePauli` performs. An all-identity pair still emits an empty generator,
+/// matching what `get_generators` pushes.
+///
+/// The term slice is built on the stack in each arm rather than collected into
+/// a `Vec`: there are tens of thousands of generators per candidate check, so
+/// one heap allocation each is enough to dominate the whole build.
+fn push_two_wire(
+    sink: &mut dyn GeneratorSink,
+    wire0: Wire,
+    p0: u8,
+    wire1: Wire,
+    p1: u8,
+    rate: f64,
+) {
+    match (p0 != 0, p1 != 0) {
+        (true, true) => sink.push(&[(wire0, p0), (wire1, p1)], rate),
+        (true, false) => sink.push(&[(wire0, p0)], rate),
+        (false, true) => sink.push(&[(wire1, p1)], rate),
+        (false, false) => sink.push(&[], rate),
+    }
 }
 
 fn _get_qbits(gate: &CliffordGate) -> Vec<usize> {
@@ -55,6 +112,11 @@ impl UniformDepolarizing {
             depol_p: 5. * depol_p / 4.,
         }
     }
+
+    /// Shared by both emission paths so they produce bit-identical rates.
+    pub(crate) fn rate(&self) -> f64 {
+        -1. / 4. * (1. - 4. * self.depol_p / 15.).ln()
+    }
 }
 
 impl Default for UniformDepolarizing {
@@ -66,7 +128,7 @@ impl Default for UniformDepolarizing {
 impl NoiseModelLike for UniformDepolarizing {
     fn get_generators(&self, circuit: &CliffordCircuit) -> (Vec<NoiseGenerator>, CliffordCircuit) {
         let mut generators = Vec::new();
-        let rate = -1. / 4. * (1. - 4. * self.depol_p / 15.).ln();
+        let rate = self.rate();
 
         for (index, gate) in circuit.gates.iter().enumerate() {
             if gate.arity() == 2 {
@@ -83,6 +145,40 @@ impl NoiseModelLike for UniformDepolarizing {
             }
         }
         (generators, circuit.clone())
+    }
+
+    fn emit_generators(
+        &self,
+        circuit: &CliffordCircuit,
+        sink: &mut dyn GeneratorSink,
+    ) -> Option<CliffordCircuit> {
+        let rate = self.rate();
+        for (index, gate) in circuit.gates.iter().enumerate() {
+            if gate.arity() == 2 {
+                for p1 in 0..=3u8 {
+                    for p2 in 0..=3u8 {
+                        if p1 != 0 || p2 != 0 {
+                            push_two_wire(
+                                sink,
+                                Wire::GateWire(index, 0),
+                                p1,
+                                Wire::GateWire(index, 1),
+                                p2,
+                                rate,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// 15 generators per 2-qubit gate; of the 16 Pauli pairs, 9 have support on
+    /// both wires and 6 on one, giving 24 terms per gate.
+    fn generator_hint(&self, circuit: &CliffordCircuit) -> (usize, usize) {
+        let n2q = _count_two_qubit(circuit);
+        (15 * n2q, 24 * n2q)
     }
 }
 /// A noise model that applies a specified set of Pauli generators after each 2-qubit gate.
@@ -126,6 +222,44 @@ impl NoiseModelLike for GateWiseNoiseModel {
         }
         (generators, circuit.clone())
     }
+
+    fn emit_generators(
+        &self,
+        circuit: &CliffordCircuit,
+        sink: &mut dyn GeneratorSink,
+    ) -> Option<CliffordCircuit> {
+        let fallback = _infer_gatewise_fallback(&self.gate_models);
+        for (index, gate) in circuit.gates.iter().enumerate() {
+            if gate.arity() == 2 {
+                let qbits = _get_qbits(gate);
+                let k = (qbits[0], qbits[1]);
+                let loc_generators = self.gate_models.get(&k).unwrap_or(&fallback);
+                for (pauli_pair, rate) in loc_generators.iter() {
+                    push_two_wire(
+                        sink,
+                        Wire::GateWire(index, 0),
+                        pauli_pair.0,
+                        Wire::GateWire(index, 1),
+                        pauli_pair.1,
+                        *rate,
+                    );
+                }
+            }
+        }
+        None
+    }
+
+    /// Bounded by the longest per-edge generator list, two terms each.
+    fn generator_hint(&self, circuit: &CliffordCircuit) -> (usize, usize) {
+        let widest = self
+            .gate_models
+            .values()
+            .map(|g| g.len())
+            .max()
+            .unwrap_or(0);
+        let n2q = _count_two_qubit(circuit);
+        (widest * n2q, 2 * widest * n2q)
+    }
 }
 
 /// Median of a vec of f64s; mutates the input by sorting it. Returns 0.0 if empty.
@@ -154,11 +288,21 @@ fn _infer_gatewise_fallback(gate_models: &GateDescription) -> Vec<((u8, u8), f64
             all_pairs.insert(*pair);
         }
     }
+    // Sort the pair set before iterating: the fallback list's order feeds the
+    // generator list order, which the (deterministic, sequential) gamma rate
+    // sum depends on — HashSet order would reintroduce per-process jitter.
+    let mut all_pairs: Vec<(u8, u8)> = all_pairs.into_iter().collect();
+    all_pairs.sort_unstable();
     let mut fallback = Vec::new();
     for pair in all_pairs.iter() {
         let mut rates: Vec<f64> = gate_models
             .values()
-            .map(|gens| gens.iter().filter(|(p, _)| p == pair).map(|(_, r)| *r).sum())
+            .map(|gens| {
+                gens.iter()
+                    .filter(|(p, _)| p == pair)
+                    .map(|(_, r)| *r)
+                    .sum()
+            })
             .collect();
         let m = _median(&mut rates);
         if m > 0.0 {
@@ -212,8 +356,13 @@ impl NoiseModelLike for LayeredNoiseModel {
             effective_layer_models.insert(key, inferred);
         }
 
-        let layer_types = effective_layer_models
-            .keys()
+        // Sort the layer keys before building `layer_types`: HashMap key order
+        // varies per process, and `layer_types` order determines layer indices
+        // (hence layer routing and generator order downstream).
+        let mut sorted_keys: Vec<_> = effective_layer_models.keys().cloned().collect();
+        sorted_keys.sort();
+        let layer_types = sorted_keys
+            .iter()
             .map(|d| HashSet::from_iter(d.iter().cloned()))
             .collect::<Vec<_>>();
         let layers = get_layered_circuit(circuit.clone(), &layer_types);
@@ -349,6 +498,10 @@ fn _infer_layered_generators(
             all_pairs.insert(*p);
         }
     }
+    // Sorted for the same reason as `_infer_gatewise_fallback`: generator
+    // order must be process-stable.
+    let mut all_pairs: Vec<(u8, u8)> = all_pairs.into_iter().collect();
+    all_pairs.sort_unstable();
     let mut result = Vec::new();
     for pair in all_pairs.iter() {
         let mut rates: Vec<f64> = source
@@ -394,6 +547,11 @@ impl Idling {
     pub fn new(decay_rate: f64) -> Self {
         Self { decay_rate }
     }
+
+    /// Shared by both emission paths so they produce bit-identical rates.
+    fn wire_rate(&self, delay: f64) -> f64 {
+        -1. / 4. * (1. - 4. * (1. - (-delay / self.decay_rate).exp()) / 3.).ln()
+    }
 }
 
 impl Default for Idling {
@@ -413,8 +571,7 @@ impl NoiseModelLike for Idling {
                     let wire = Wire::GateWire(index, output_index);
                     let delay = delays.get(&wire).unwrap_or(&0.);
                     if *delay > 0. {
-                        let wire_rate = -1. / 4.
-                            * (1. - 4. * (1. - (-delay / self.decay_rate).exp()) / 3.).ln();
+                        let wire_rate = self.wire_rate(*delay);
                         for p in 1u8..=3 {
                             let mut pauli = SparsePauli::new();
                             pauli.update(wire.clone(), p);
@@ -425,6 +582,36 @@ impl NoiseModelLike for Idling {
             }
         }
         (generators, circuit.clone())
+    }
+
+    fn emit_generators(
+        &self,
+        circuit: &CliffordCircuit,
+        sink: &mut dyn GeneratorSink,
+    ) -> Option<CliffordCircuit> {
+        let delays = get_alap_delays(circuit);
+        for (index, gate) in circuit.gates.iter().enumerate() {
+            if gate.arity() == 2 {
+                for output_index in 0..2 {
+                    let wire = Wire::GateWire(index, output_index);
+                    let delay = delays.get(&wire).unwrap_or(&0.);
+                    if *delay > 0. {
+                        let wire_rate = self.wire_rate(*delay);
+                        for p in 1u8..=3 {
+                            sink.push(&[(wire.clone(), p)], wire_rate);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// At most three single-wire generators on each of a 2-qubit gate's two
+    /// output wires.
+    fn generator_hint(&self, circuit: &CliffordCircuit) -> (usize, usize) {
+        let n = 6 * _count_two_qubit(circuit);
+        (n, n)
     }
 }
 
@@ -437,6 +624,29 @@ impl Readout {
     pub fn new(error_rate: f64) -> Self {
         Self { error_rate }
     }
+
+    /// Shared by both emission paths so they produce bit-identical rates.
+    pub(crate) fn rate(&self) -> f64 {
+        -1. / 2. * (1. - 2. * self.error_rate).ln()
+    }
+
+    pub(crate) fn generators_for_last_wires(&self, last_wires: &[Wire]) -> Vec<NoiseGenerator> {
+        let rate = self.rate();
+        let mut generators = Vec::with_capacity(last_wires.len());
+        for wire in last_wires {
+            let mut pauli = SparsePauli::new();
+            pauli.update(wire.clone(), 1);
+            generators.push((pauli, rate));
+        }
+        generators
+    }
+
+    pub(crate) fn emit_for_last_wires(&self, last_wires: &[Wire], sink: &mut dyn GeneratorSink) {
+        let rate = self.rate();
+        for wire in last_wires {
+            sink.push(&[(wire.clone(), 1)], rate);
+        }
+    }
 }
 
 impl Default for Readout {
@@ -446,17 +656,14 @@ impl Default for Readout {
 }
 
 impl NoiseModelLike for Readout {
-    fn get_generators(&self, circuit: &CliffordCircuit) -> (Vec<NoiseGenerator>, CliffordCircuit) {
-        let mut generators = Vec::new();
-        let rate = -1. / 2. * (1. - 2. * self.error_rate).ln();
-        for qbit in 0..circuit.nqbits {
-            let wire = get_last_wire(circuit, qbit);
-            let mut pauli = SparsePauli::new();
-            pauli.update(wire.clone(), 1);
-            generators.push((pauli.clone(), rate));
-        }
+    /// One single-wire generator on each qubit's last wire.
+    fn generator_hint(&self, circuit: &CliffordCircuit) -> (usize, usize) {
+        (circuit.nqbits, circuit.nqbits)
+    }
 
-        (generators, circuit.clone())
+    fn get_generators(&self, circuit: &CliffordCircuit) -> (Vec<NoiseGenerator>, CliffordCircuit) {
+        let last = super::utils::last_wires(circuit);
+        (self.generators_for_last_wires(&last), circuit.clone())
     }
 }
 /// A wrapper enum to simplify interfacing with Python.
@@ -477,6 +684,30 @@ impl NoiseModelLike for UNoiseModel {
             UNoiseModel::Layered(m) => m.get_generators(circuit),
             UNoiseModel::Readout(m) => m.get_generators(circuit),
             UNoiseModel::Idling(m) => m.get_generators(circuit),
+        }
+    }
+
+    fn emit_generators(
+        &self,
+        circuit: &CliffordCircuit,
+        sink: &mut dyn GeneratorSink,
+    ) -> Option<CliffordCircuit> {
+        match self {
+            UNoiseModel::UniformDepolarizing(m) => m.emit_generators(circuit, sink),
+            UNoiseModel::GateWise(m) => m.emit_generators(circuit, sink),
+            UNoiseModel::Layered(m) => m.emit_generators(circuit, sink),
+            UNoiseModel::Readout(m) => m.emit_generators(circuit, sink),
+            UNoiseModel::Idling(m) => m.emit_generators(circuit, sink),
+        }
+    }
+
+    fn generator_hint(&self, circuit: &CliffordCircuit) -> (usize, usize) {
+        match self {
+            UNoiseModel::UniformDepolarizing(m) => m.generator_hint(circuit),
+            UNoiseModel::GateWise(m) => m.generator_hint(circuit),
+            UNoiseModel::Layered(m) => m.generator_hint(circuit),
+            UNoiseModel::Readout(m) => m.generator_hint(circuit),
+            UNoiseModel::Idling(m) => m.generator_hint(circuit),
         }
     }
 }

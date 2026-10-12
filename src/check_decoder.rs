@@ -10,12 +10,12 @@
 // copyright notice, and modified files need to carry a notice indicating
 // that they have been altered from the originals.
 
+use super::decoding::information_set_decoding;
 use super::pauli_propagator::{Direction, PauliPropagator};
 use super::sparse_pauli::SparsePauli;
 use super::stabilizer_group::StabilizerGroup;
 use super::utils::{mult_f2, nullspace, transpose};
 use super::wire::Wire;
-use super::decoding::information_set_decoding;
 use itertools::Itertools;
 use rand::Rng;
 use rand::SeedableRng;
@@ -118,7 +118,7 @@ impl CheckDecoder {
             .b_matrix
             .iter()
             .zip(self.all_paulis.iter())
-            .filter(|(_, a)| actual_paulis.contains(a))
+            .filter(|(_, (w, _))| w != middle_wire && w != other_wire)
             .map(|(vec, _)| vec.clone())
             .collect();
 
