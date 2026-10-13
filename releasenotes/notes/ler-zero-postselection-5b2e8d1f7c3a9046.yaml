@@ -1,0 +1,7 @@
+---
+fixes:
+  - |
+    With ``cost="LER"``, a candidate check under which post-selection rejected every sampled
+    shot was scored NaN, so it was compared wrongly against the other candidates and the
+    reported ``cost`` of a :class:`~qiskit_paulice.checked_circuit.CheckedCircuit` could be
+    ``nan``. Such a candidate is now scored as the worst logical error rate, 1.
