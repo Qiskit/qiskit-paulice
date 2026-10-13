@@ -242,9 +242,11 @@ class TestNoiseModels(unittest.TestCase):
 
     def test_equal_generator_rate(self):
         """The shared rate reproduces the requested error probability, or raises if it cannot."""
-        # A single generator fires with probability (1 - exp(-2 r)) / 2, and at most 1/2.
-        rate = _equal_generator_rate(["XX"], 0.3)
-        self.assertAlmostEqual((1 - np.exp(-2 * rate)) / 2, 0.3, places=14)
+        # A single generator fires with probability (1 - exp(-2 r)) / 2, and at most 1/2;
+        # 0.45 needs a rate above 1, past the bisection's initial bracket.
+        for error_probability in (0.3, 0.45):
+            rate = _equal_generator_rate(["XX"], error_probability)
+            self.assertAlmostEqual((1 - np.exp(-2 * rate)) / 2, error_probability, places=14)
         self.assertEqual(_equal_generator_rate(["XX"], 0.0), 0.0)
         for bases, error_probability in ((["XX"], 0.5), (["XX", "ZZ"], 0.75), (["XX"], -1e-3)):
             with (
