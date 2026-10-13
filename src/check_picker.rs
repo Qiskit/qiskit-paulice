@@ -369,29 +369,42 @@ impl CheckPicker {
     /// Because the costs are collected by index rather than compared as they
     /// arrive, the outcome does not depend on which candidates happened to be
     /// memoized.
+    ///
+    /// The virtual Zs of the fresh candidates are computed in parallel:
+    /// `compute_vzs` only reads the evaluator, so the candidates are
+    /// independent, and the memo is consulted beforehand so no lock is held
+    /// while they run.
     fn score_checks(&self, checks: &[SparsePauli]) -> Vec<(Vec<usize>, f64)> {
         let mut scored: Vec<Option<(Vec<usize>, f64)>> = vec![None; checks.len()];
-        let mut pending: Vec<PendingEval> = Vec::new();
+        let mut misses: Vec<(usize, Vec<(PyWire, u8)>)> = Vec::new();
         let mut pending_keys: HashSet<Vec<(PyWire, u8)>> = HashSet::new();
         let mut repeats: Vec<(usize, Vec<(PyWire, u8)>)> = Vec::new();
-        for (index, check) in checks.iter().enumerate() {
-            let key = _memo_key(check);
-            if let Some((cost, vzs)) = self.eval_memo.lock().unwrap().get(&key).cloned() {
-                scored[index] = Some((vzs, cost));
-                continue;
+        {
+            let memo = self.eval_memo.lock().unwrap();
+            for (index, check) in checks.iter().enumerate() {
+                let key = _memo_key(check);
+                if let Some((cost, vzs)) = memo.get(&key) {
+                    scored[index] = Some((vzs.clone(), *cost));
+                } else if pending_keys.contains(&key) {
+                    repeats.push((index, key));
+                } else {
+                    pending_keys.insert(key.clone());
+                    misses.push((index, key));
+                }
             }
-            if pending_keys.contains(&key) {
-                repeats.push((index, key));
-                continue;
-            }
-            pending_keys.insert(key.clone());
-            let vzs = if self.logical_data.0.is_empty() {
-                Vec::new()
-            } else {
-                self.check_evaluator.as_ref().unwrap().compute_vzs(check)
-            };
-            pending.push((index, vzs, key));
         }
+        let pending: Vec<PendingEval> = if self.logical_data.0.is_empty() {
+            misses
+                .into_iter()
+                .map(|(index, key)| (index, Vec::new(), key))
+                .collect()
+        } else {
+            let evaluator = self.check_evaluator.as_ref().unwrap();
+            misses
+                .into_par_iter()
+                .map(|(index, key)| (index, evaluator.compute_vzs(&checks[index]), key))
+                .collect()
+        };
         if !pending.is_empty() {
             let evaluator = self.check_evaluator.as_ref().unwrap();
             let items: Vec<(SparsePauli, Vec<usize>)> = pending
@@ -464,5 +477,94 @@ impl CheckPicker {
             // Committing changes the circuit and check data; start a fresh memo.
             eval_memo: EvalMemo::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod check_picker_tests {
+    use super::*;
+
+    /// A picker over a small measured circuit, so candidates carry virtual Zs
+    /// and `score_checks` takes the parallel `compute_vzs` path.
+    fn measured_picker(metric: Metric, noise: f64) -> CheckPicker {
+        let gates = [
+            ("H", vec![0]),
+            ("CX", vec![0, 1]),
+            ("S", vec![1]),
+            ("CX", vec![1, 2]),
+            ("H", vec![2]),
+            ("CX", vec![2, 0]),
+            ("CX", vec![0, 1]),
+            ("H", vec![1]),
+        ];
+        let circuit = gates
+            .into_iter()
+            .map(|(name, qubits)| (name.to_string(), qubits))
+            .collect();
+        let mut picker = CheckPicker::new(
+            circuit,
+            Some(4),
+            Some(vec![0, 1, 2]),
+            None,
+            None,
+            None,
+            None,
+        );
+        picker.set_evaluation_data(vec![NoiseModel::uniform_depolarizing(noise)], metric, 3);
+        picker
+    }
+
+    /// Candidates decoded from several windows of every qubit, listed twice so
+    /// each one is repeated; also returns how many distinct candidates there are.
+    fn repeated_candidates(picker: &mut CheckPicker) -> (Vec<SparsePauli>, usize) {
+        let mut checks = Vec::new();
+        for qubit in 0..3 {
+            for seed in 0..3 {
+                picker.set_support(picker.get_wires(qubit), vec![1, 2, 3], Some(seed));
+                checks.extend(picker.check_decoder.as_ref().unwrap().find_checks());
+            }
+        }
+        let distinct: HashSet<_> = checks.iter().map(_memo_key).collect();
+        assert!(!distinct.is_empty());
+        let repeated = checks.iter().chain(checks.iter()).cloned().collect();
+        (repeated, distinct.len())
+    }
+
+    #[test]
+    fn score_checks_matches_direct_evaluation() {
+        let mut picker = measured_picker(Metric::gamma(), 0.01);
+        let (repeated, distinct) = repeated_candidates(&mut picker);
+
+        let scored = picker.score_checks(&repeated);
+
+        let evaluator = picker.check_evaluator.as_ref().unwrap();
+        assert_eq!(scored.len(), repeated.len());
+        for (check, (vzs, cost)) in repeated.iter().zip(&scored) {
+            let expected_vzs = evaluator.compute_vzs(check);
+            let expected_cost = evaluator.evaluate(check, &expected_vzs);
+            assert_eq!(*vzs, expected_vzs);
+            assert_eq!(cost.to_bits(), expected_cost.to_bits());
+        }
+        assert!(scored.iter().any(|(vzs, _)| !vzs.is_empty()));
+        assert_eq!(picker.eval_memo.lock().unwrap().len(), distinct);
+    }
+
+    /// LER is a Monte Carlo estimate, so a repeat only gets the bit-identical
+    /// cost of its first occurrence if it was served rather than resampled.
+    #[test]
+    fn score_checks_scores_each_distinct_candidate_once() {
+        let mut picker = measured_picker(Metric::logical_error_rate(200), 0.2);
+        let (repeated, distinct) = repeated_candidates(&mut picker);
+
+        let scored = picker.score_checks(&repeated);
+
+        let mut first = HashMap::new();
+        for (check, (vzs, cost)) in repeated.iter().zip(&scored) {
+            let seen = first
+                .entry(_memo_key(check))
+                .or_insert_with(|| (vzs.clone(), cost.to_bits()));
+            assert_eq!(*seen, (vzs.clone(), cost.to_bits()));
+        }
+        assert_eq!(picker.eval_memo.lock().unwrap().len(), distinct);
     }
 }
