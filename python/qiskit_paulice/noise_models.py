@@ -23,10 +23,10 @@ from qiskit.quantum_info import Pauli, PauliLindbladMap
 
 # Type aliases for gate noise specifications
 UniformGateNoise = float
-"""An average gate infidelity for every 2-qubit gate.
+"""An average gate infidelity ``p`` for every 2-qubit gate.
 
-A depolarizing channel is applied after each 2-qubit gate. Each of the ``15`` non-identity
-2-qubit Paulis occurs with the same probability.
+A depolarizing channel is applied after each 2-qubit gate: each of the ``15`` non-identity 2-qubit
+Paulis occurs with probability ``d / 15``, where ``d = 5 p / 4`` is the total error probability.
 """
 
 LayeredGateNoise = dict[tuple[tuple[int, int], ...], list[tuple[Pauli | str, float]]]
@@ -53,6 +53,69 @@ edge ``(a, b)``, ``"XZ"`` places ``X`` on ``a`` and ``Z`` on ``b``.
 
 GateNoise = UniformGateNoise | LayeredGateNoise | GateWiseNoise
 """Gate noise can be uniform (float), layered (dict), or gate-wise (dict)."""
+
+
+_INFIDELITY_TO_ERROR_PROBABILITY = 5 / 4
+"""Total error probability of a two-qubit depolarizing channel per unit of average gate infidelity,
+``(D + 1) / D`` with ``D = 4``; see :data:`.UniformGateNoise`."""
+
+
+def _equal_generator_rate(paulis: Sequence[str], error_probability: float) -> float:
+    """Common rate of two-qubit Pauli generators whose channel has a given total error probability.
+
+    A Pauli channel scales ``<Q>`` by its Pauli fidelity ``f_Q = 1 - 2 P(error anticommutes with
+    Q)``, and its no-error probability is the mean of ``f_Q`` over all ``16`` two-qubit Paulis
+    [Flammia and Wallman, ACM Trans. Quantum Comput. 1, 3 (2020)]. A generator with rate ``r``
+    fires with probability ``(1 - exp(-2 r)) / 2``, so it contributes ``exp(-2 r)`` to ``f_Q`` when
+    it anticommutes with ``Q``; independent generators multiply, giving ``f_Q = exp(-2 r n_Q)``
+    with ``n_Q`` the number of generators anticommuting with ``Q``. The no-error probability
+    therefore decreases monotonically in ``r``, and this function bisects it to
+    ``1 - error_probability``. Splitting the probability evenly and converting each share to a
+    rate on its own would ignore shots in which several generators fire.
+
+    For the full basis every non-identity ``Q`` has ``n_Q = 8``, and the result is the closed
+    form ``-ln(1 - 16 d / 15) / 16`` of :data:`.UniformGateNoise`.
+
+    Args:
+        paulis: Two-character labels over ``I``, ``X``, ``Y``, ``Z`` of the generators.
+        error_probability: Total probability ``d`` that the channel applies a non-identity Pauli.
+
+    Returns:
+        The rate shared by the generators; ``0.0`` when ``error_probability`` is ``0``.
+
+    Raises:
+        ValueError: ``error_probability`` is negative or not below the fraction of two-qubit
+            Paulis that anticommute with some generator, the channel's largest possible error.
+    """
+    labels = [a + b for a in "IXYZ" for b in "IXYZ"]
+    x = np.array([[c in "XY" for c in label] for label in labels], dtype=int)
+    z = np.array([[c in "ZY" for c in label] for label in labels], dtype=int)
+    gen_x = np.array([[c in "XY" for c in label] for label in paulis], dtype=int)
+    gen_z = np.array([[c in "ZY" for c in label] for label in paulis], dtype=int)
+    anticommuting = (x @ gen_z.T + z @ gen_x.T) % 2  # [Q, generator]: do they anticommute?
+    n_q = anticommuting.sum(axis=1)
+    reachable = float(np.mean(n_q > 0))
+    if not 0 <= error_probability < reachable:
+        raise ValueError(
+            f"Generators {list(paulis)} can produce a total error probability in [0, {reachable}),"
+            f" not {error_probability!r}."
+        )
+    if error_probability == 0:
+        return 0.0
+
+    def no_error_probability(rate: float) -> float:
+        return float(np.mean(np.exp(-2 * rate * n_q)))
+
+    target = 1 - error_probability
+    low, high = 0.0, 1.0
+    while no_error_probability(high) > target:
+        high *= 2
+    while (mid := (low + high) / 2) not in (low, high):
+        if no_error_probability(mid) > target:
+            low = mid
+        else:
+            high = mid
+    return high
 
 
 @dataclass
@@ -99,24 +162,24 @@ class NoiseModel:
                 as well as readout error information for each qubit in the layout.
             layout: Physical qubit indices on the backend to include in the noise model. The order
                 defines the virtual qubit indexing (virtual qubit 0 maps to ``layout[0]``, etc.).
-            uniform_gate_noise: If ``True``, the ``gate_noise`` field in the output :class:`.NoiseModel`
-                will be a :data:`.UniformGateNoise`: the mean reported error over all edges, applied as
-                the same depolarizing channel after every entangling gate.
-                If ``False``, ``gate_noise`` will be a :data:`.GateWiseNoise` instance where each
-                edge is associated with a custom noise channel based on backend calibration data.
-            pauli_bases: For :data:`.GateWiseNoise` models, ``pauli_bases`` are the bases over which
-                the error probability reported from the backend will be distributed. Each basis is a
-                2-character Pauli string paired left-to-right with the edge tuple, so ``"XZ"`` on
-                edge ``(a, b)`` places ``X`` on ``a`` and ``Z`` on ``b``. The default behavior is
-                to use the full 2Q Pauli basis excluding ``"II"``. For :data:`.UniformGateNoise`, the
-                full basis is assumed, and this argument is ignored.
+            uniform_gate_noise: If ``True``, ``gate_noise`` is a :data:`.UniformGateNoise`: the mean
+                reported error over all edges. If ``False``, it is a :data:`.GateWiseNoise` with a
+                channel per edge built from that edge's reported error.
+            pauli_bases: For :data:`.GateWiseNoise` models, the generators of each edge's channel:
+                2-character Pauli strings paired left-to-right with the edge tuple, so ``"XZ"`` on
+                edge ``(a, b)`` places ``X`` on ``a`` and ``Z`` on ``b``. They share one rate,
+                chosen so the channel has the edge's total error probability. The default is the
+                full 2Q Pauli basis excluding ``"II"``, the depolarizing channel of
+                :data:`.UniformGateNoise`. Ignored when ``uniform_gate_noise`` is ``True``.
 
         Returns:
             A :class:`NoiseModel` instance containing gate and readout noise derived from backend
             calibration data.
 
         Raises:
-            ValueError: Backend is missing calibration data or layout contains invalid qubit indices.
+            ValueError: Backend is missing calibration data, layout contains invalid qubit indices,
+                a Pauli basis is malformed or ``"II"``, or ``pauli_bases`` cannot produce an
+                edge's error.
         """
         # Make sure the inputs are valid
         if not all(0 <= q < backend.num_qubits for q in layout):
@@ -129,10 +192,13 @@ class NoiseModel:
             pauli_bases = [p1 + p2 for p1 in "IXYZ" for p2 in "IXYZ" if (p1, p2) != ("I", "I")]
         if not uniform_gate_noise:
             for basis in pauli_bases:
-                if not isinstance(basis, str) or len(basis) != 2:
+                if not isinstance(basis, str) or len(basis) != 2 or set(basis) - set("IXYZ"):
                     raise ValueError(
-                        f"Each Pauli basis must be a 2-character string. Got: {basis!r}"
+                        "Each Pauli basis must be a 2-character string over I, X, Y, and Z. "
+                        f"Got: {basis!r}"
                     )
+                if basis == "II":
+                    raise ValueError("The identity 'II' is not an error and cannot be a basis.")
 
         # Mapping from physical to virtual qubit indices.
         phys_to_virt = {phys: virt for virt, phys in enumerate(layout)}
@@ -176,8 +242,8 @@ class NoiseModel:
                 v0 = phys_to_virt[edge[0]]
                 v1 = phys_to_virt[edge[1]]
                 a, b = (v0, v1) if v0 < v1 else (v1, v0)
-                prob_per_basis = mean_edge_error / len(pauli_bases)
-                rate_per_basis = -0.5 * float(np.log(1.0 - 2.0 * prob_per_basis))
+                error_probability = _INFIDELITY_TO_ERROR_PROBABILITY * mean_edge_error
+                rate_per_basis = _equal_generator_rate(pauli_bases, error_probability)
                 generators = [(g, rate_per_basis) for g in pauli_bases]
                 mirrored = [(g[::-1], rate_per_basis) for g in pauli_bases]
                 gate_noise_per_gate[(a, b)] = generators
