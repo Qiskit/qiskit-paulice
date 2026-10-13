@@ -113,8 +113,7 @@ class TestNoiseModels(unittest.TestCase):
             # Should have 15 generators (full 2Q Pauli basis minus II)
             self.assertEqual(len(generators), 15)
 
-            # Manual calculation: the infidelity becomes the total error probability 5/4 of it,
-            # and 15 equal generators give a depolarizing channel at the uniform model's rate.
+            # d = 5/4 of the infidelity; 15 equal generators are depolarizing at the uniform rate.
             error_probability = 5 * backend_prob / 4
             expected_rate = -np.log(1.0 - 16.0 * error_probability / 15.0) / 16.0
 
@@ -219,8 +218,7 @@ class TestNoiseModels(unittest.TestCase):
             rates = {rate for _, rate in generators}
             self.assertEqual(len(rates), 1)
 
-            # The three generators fire independently; enumerating every firing pattern, the
-            # channel's total error probability is 5/4 of the reported infidelity.
+            # Enumerating every firing pattern, the channel's error probability is d = 5p/4.
             self.assertAlmostEqual(
                 _total_error_probability(custom_bases, rates.pop()), 5 * backend_prob / 4, places=12
             )

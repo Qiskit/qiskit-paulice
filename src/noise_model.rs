@@ -99,12 +99,12 @@ fn _get_qbits(gate: &CliffordGate) -> Vec<usize> {
 }
 
 /// A noise model that applies the same depolarizing channel after every 2-qubit gate.
-/// `new` takes an average gate infidelity and stores 5/4 of it as `depol_p`, the total
-/// probability that the gate suffers a Pauli error. Each of the 15 non-identity 2-qubit Paulis
-/// is a generator with the same rate `r`, so every Pauli error is equally likely. The product of
-/// those 15 generators has Pauli fidelity `exp(-16 r)` for every non-identity Pauli, and a
-/// depolarizing channel with total error probability `d` has `1 - 16 d / 15`, so
-/// `r = -ln(1 - 16 d / 15) / 16` reproduces `depol_p` exactly.
+/// `new` takes an average gate infidelity `p` and stores the total error probability
+/// `d = 5p/4` as `depol_p` (see `UniformGateNoise` in `noise_models.py`). The 15 non-identity
+/// 2-qubit Paulis are generators at one rate `r`. Every non-identity Pauli anticommutes with 8
+/// of them, so the product channel has Pauli fidelity `exp(-16 r)`, while the depolarizing
+/// channel with error probability `d` has `1 - 16d/15`; hence `r = -ln(1 - 16d/15)/16`. The
+/// general derivation is in `_equal_generator_rate` in `noise_models.py`.
 #[derive(Clone, Debug)]
 pub struct UniformDepolarizing {
     depol_p: f64,
@@ -725,8 +725,7 @@ pub struct NoiseModel {
 #[pymethods]
 impl NoiseModel {
     /// Adds a two-qubit depolarizing channel after each 2-qubit gate in the circuit.
-    /// `proba` is the average gate infidelity; the total Pauli error probability is `5 proba / 4`,
-    /// spread equally over the 15 non-identity two-qubit Paulis, so `proba` must lie in [0, 3/4).
+    /// `proba` is the average gate infidelity, in [0, 3/4); see `UniformDepolarizing`.
     #[staticmethod]
     pub fn uniform_depolarizing(proba: f64) -> Self {
         Self {

@@ -734,9 +734,7 @@ class TestFaultChannels(unittest.TestCase):
                 self.assertEqual(len(rates), 15)
                 self.assertEqual(len({(*x, *z) for x, z in zip(x_img, z_img, strict=True)}), 15)
                 np.testing.assert_allclose(rates, rates[0])
-                # Every non-identity Pauli anticommutes with 8 of the 15 generators, so the
-                # channel's Pauli fidelity is exp(-16 r); a depolarizing channel with total
-                # error probability d has 1 - 16 d / 15.
+                # Pauli fidelity exp(-16 r) of the product equals 1 - 16 d / 15 of the channel.
                 error_probability = 15 / 16 * (1 - np.exp(-16 * rates[0]))
                 self.assertAlmostEqual(error_probability, 5 * infidelity / 4)
 

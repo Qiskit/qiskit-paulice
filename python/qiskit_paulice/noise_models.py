@@ -23,11 +23,12 @@ from qiskit.quantum_info import Pauli, PauliLindbladMap
 
 # Type aliases for gate noise specifications
 UniformGateNoise = float
-"""An average gate infidelity for every 2-qubit gate.
+"""An average gate infidelity ``p`` for every 2-qubit gate.
 
-A depolarizing channel is applied after each 2-qubit gate. Each of the ``15`` non-identity
-2-qubit Paulis occurs with the same probability, and the total probability that a gate suffers
-any Pauli error is ``5 / 4`` of the infidelity, so the value must lie in ``[0, 0.75)``.
+A depolarizing channel is applied after each 2-qubit gate: each of the ``15`` non-identity 2-qubit
+Paulis occurs with probability ``d / 15``, where ``d = 5 p / 4`` is the total error probability,
+since average infidelity is ``D / (D + 1)`` of it for dimension ``D = 4`` [Nielsen, Phys. Lett. A
+303, 249 (2002)]. The channel exists only for ``d < 15 / 16``, so ``p`` must lie in ``[0, 0.75)``.
 """
 
 LayeredGateNoise = dict[tuple[tuple[int, int], ...], list[tuple[Pauli | str, float]]]
@@ -57,34 +58,36 @@ GateNoise = UniformGateNoise | LayeredGateNoise | GateWiseNoise
 
 
 _INFIDELITY_TO_ERROR_PROBABILITY = 5 / 4
-"""Total Pauli error probability of a two-qubit depolarizing channel per unit of average gate
-infidelity: ``(D + 1) / D`` for Hilbert-space dimension ``D = 4``."""
+"""Total error probability of a two-qubit depolarizing channel per unit of average gate infidelity,
+``(D + 1) / D`` with ``D = 4``; see :data:`.UniformGateNoise`."""
 
 
 def _equal_generator_rate(paulis: Sequence[str], error_probability: float) -> float:
     """Common rate of two-qubit Pauli generators whose channel has a given total error probability.
 
-    The generators fire independently, so the channel they produce is not ``paulis`` with
-    probability ``error_probability / len(paulis)`` each: products of fired generators land on
-    other Paulis, and some products cancel. The channel multiplies the expectation value of a
-    Pauli ``Q`` by ``exp(-2 r n_Q)``, where ``n_Q`` counts the generators anticommuting with
-    ``Q``, so the probability that it applies no error is the mean of ``exp(-2 r n_Q)`` over all
-    ``16`` two-qubit Paulis. This function returns the rate ``r`` at which that probability equals
-    ``1 - error_probability``, found by bisection since it decreases monotonically in ``r``. For
-    the full basis of ``15`` Paulis every non-identity ``Q`` has ``n_Q = 8``, which gives
-    ``-ln(1 - 16 p / 15) / 16``, the rate of :data:`.UniformGateNoise`.
+    A Pauli channel scales ``<Q>`` by its Pauli fidelity ``f_Q = 1 - 2 P(error anticommutes with
+    Q)``, and its no-error probability is the mean of ``f_Q`` over all ``16`` two-qubit Paulis
+    [Flammia and Wallman, ACM Trans. Quantum Comput. 1, 3 (2020)]. A generator with rate ``r``
+    fires with probability ``(1 - exp(-2 r)) / 2``, so it contributes ``exp(-2 r)`` to ``f_Q`` when
+    it anticommutes with ``Q``; independent generators multiply, giving ``f_Q = exp(-2 r n_Q)``
+    with ``n_Q`` the number of generators anticommuting with ``Q``. The no-error probability
+    therefore decreases monotonically in ``r``, and this function bisects it to
+    ``1 - error_probability``. Splitting the probability evenly and converting each share to a
+    rate on its own would ignore shots in which several generators fire.
+
+    For the full basis every non-identity ``Q`` has ``n_Q = 8``, and the result is the closed
+    form ``-ln(1 - 16 d / 15) / 16`` of :data:`.UniformGateNoise`.
 
     Args:
         paulis: Two-character labels over ``I``, ``X``, ``Y``, ``Z`` of the generators.
-        error_probability: Total probability that the channel applies a non-identity Pauli.
+        error_probability: Total probability ``d`` that the channel applies a non-identity Pauli.
 
     Returns:
         The rate shared by the generators; ``0.0`` when ``error_probability`` is ``0``.
 
     Raises:
-        ValueError: ``error_probability`` is negative, or at least the fraction of two-qubit Paulis
-            that anticommute with some generator, which is the most error the generators can
-            produce.
+        ValueError: ``error_probability`` is negative or not below the fraction of two-qubit
+            Paulis that anticommute with some generator, the channel's largest possible error.
     """
     labels = [a + b for a in "IXYZ" for b in "IXYZ"]
     x = np.array([[c in "XY" for c in label] for label in labels], dtype=int)
@@ -161,21 +164,17 @@ class NoiseModel:
                 as well as readout error information for each qubit in the layout.
             layout: Physical qubit indices on the backend to include in the noise model. The order
                 defines the virtual qubit indexing (virtual qubit 0 maps to ``layout[0]``, etc.).
-            uniform_gate_noise: If ``True``, the ``gate_noise`` field in the output :class:`.NoiseModel`
-                will be a :data:`.UniformGateNoise`: the mean reported error over all edges, applied as
-                the same depolarizing channel after every entangling gate.
-                If ``False``, ``gate_noise`` will be a :data:`.GateWiseNoise` instance where each
-                edge carries its own channel built from its calibration data. Either way the
-                reported error is an average gate infidelity, and the channel on an edge applies
-                a non-identity Pauli with total probability ``5 / 4`` of it.
-            pauli_bases: For :data:`.GateWiseNoise` models, the Pauli generators of each edge's
-                channel. Each basis is a 2-character Pauli string paired left-to-right with the
-                edge tuple, so ``"XZ"`` on edge ``(a, b)`` places ``X`` on ``a`` and ``Z`` on
-                ``b``. All generators of an edge share one rate, chosen so that the channel they
-                produce has exactly the edge's total error probability. The default is the full
-                2Q Pauli basis excluding ``"II"``, which makes every edge's channel the
-                depolarizing channel of :data:`.UniformGateNoise`. For
-                :data:`.UniformGateNoise`, the full basis is assumed, and this argument is ignored.
+            uniform_gate_noise: If ``True``, ``gate_noise`` is a :data:`.UniformGateNoise`: the mean
+                reported error over all edges. If ``False``, it is a :data:`.GateWiseNoise` with a
+                channel per edge built from that edge's reported error. Both read the error as an
+                average gate infidelity and give the channel the total error probability ``5 / 4``
+                of it, as in :data:`.UniformGateNoise`.
+            pauli_bases: For :data:`.GateWiseNoise` models, the generators of each edge's channel:
+                2-character Pauli strings paired left-to-right with the edge tuple, so ``"XZ"`` on
+                edge ``(a, b)`` places ``X`` on ``a`` and ``Z`` on ``b``. They share one rate,
+                chosen so the channel has the edge's total error probability. The default is the
+                full 2Q Pauli basis excluding ``"II"``, the depolarizing channel of
+                :data:`.UniformGateNoise`. Ignored when ``uniform_gate_noise`` is ``True``.
 
         Returns:
             A :class:`NoiseModel` instance containing gate and readout noise derived from backend
