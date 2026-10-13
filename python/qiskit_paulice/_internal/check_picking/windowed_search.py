@@ -96,11 +96,14 @@ def windowed_check_picker(
         verbose: Print progress information
         paulis: Pauli types to consider
         seed: Random seed for reproducibility
+
+    Returns one circuit *builder* per variant rather than one circuit; the
+    caller reads the variant it wants. See ``_DeferredCircuits``.
     """
     if seed is not None:
         np.random.seed(seed)
     
-    circuits = [check_picker.get_circuit()]
+    circuits = [check_picker.get_circuit_deferred()]
     costs = [check_picker.get_current_energy()]
     committed_targets = []
     for idx, target in enumerate(targets):
@@ -127,6 +130,6 @@ def windowed_check_picker(
             print(f"[WIN] Best check has score: {best_check[-1]}.")
         check_picker = best_check[0]
         committed_targets.append(target)
-        circuits.append(check_picker.get_circuit())
+        circuits.append(check_picker.get_circuit_deferred())
         costs.append(check_picker.get_current_energy())
     return (circuits, *check_picker.get_check_data(), costs, committed_targets)

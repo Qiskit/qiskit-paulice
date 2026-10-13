@@ -28,6 +28,7 @@ from qiskit.transpiler import CouplingMap
 from qiskit_paulice import CheckedCircuit
 from qiskit_paulice import checks as checks_mod
 from qiskit_paulice._internal import Metric as _Metric
+from qiskit_paulice._internal import station as station_mod
 from qiskit_paulice._internal.conversion import convert_noise_model as _convert_noise_model
 from qiskit_paulice._internal.station import CheckPickerStation
 from qiskit_paulice.checked_circuit import _fault_channels
@@ -425,6 +426,38 @@ class TestAddPauliChecksDeferredCircuits(unittest.TestCase):
             result = add_pauli_checks(_ghz(5), list(range(5)), _DEFAULT_NOISE, seed=0)
         with self.assertWarns(UserWarning):
             self.assertIsNotNone(result[-1].circuit)
+
+    def _counting_conversion(self):
+        """Patch the rustiq-to-qiskit conversion to count how often it runs."""
+        converted = []
+        original = station_mod.convert_to_qiskit_circuit
+
+        def counted(circuit, nqbits):
+            converted.append(nqbits)
+            return original(circuit, nqbits)
+
+        return converted, unittest.mock.patch.object(
+            station_mod, "convert_to_qiskit_circuit", counted
+        )
+
+    def test_picker_variants_are_converted_on_demand(self):
+        # The picker records one variant per committed check. Converting every
+        # picker variant up front would undo the deferral of the output assembly.
+        converted, patch = self._counting_conversion()
+        with patch:
+            result = add_pauli_checks(_clifford(), [0, 1], _DEFAULT_NOISE, seed=0)
+            self.assertEqual(len(result), 3)
+            self.assertEqual(converted, [])
+            self.assertIsNotNone(result[-1].circuit)
+        self.assertEqual(len(converted), 1)
+
+    def test_picker_variants_are_converted_once_each(self):
+        converted, patch = self._counting_conversion()
+        with patch:
+            result = add_pauli_checks(_clifford(), [0, 1], _DEFAULT_NOISE, seed=0)
+            for _ in range(3):
+                self.assertIsNotNone(result[1].circuit)
+        self.assertEqual(len(converted), 1)
 
 
 class TestAddPauliChecksBasic(unittest.TestCase):
