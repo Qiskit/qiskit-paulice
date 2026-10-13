@@ -24,6 +24,8 @@ pub mod noise_generators;
 pub mod noise_model;
 pub mod pauli;
 pub mod pauli_propagator;
+pub mod philox;
+pub mod poisson_table;
 pub mod python_interface;
 pub mod scheduling;
 pub mod sparse_pauli;

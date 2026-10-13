@@ -29,7 +29,7 @@ use rustiq_core::structures::CliffordCircuit;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Mutex;
 
-fn proba_from_rate(rate: f64) -> f64 {
+pub(crate) fn proba_from_rate(rate: f64) -> f64 {
     1. - (1. + (-2. * rate).exp()) / 2.
 }
 
