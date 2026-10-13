@@ -27,11 +27,40 @@ use super::wire::Wire;
 use rustiq_core::structures::CliffordCircuit;
 
 use pyo3::prelude::*;
+use rayon::prelude::*;
+
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 type LogicalData = (Vec<usize>, StabilizerGroup);
 type CheckData = (Vec<usize>, Vec<Vec<usize>>);
 
 type PyWire = (i32, usize);
+
+/// Memoized candidate evaluations, keyed by the canonical (sorted) form of the
+/// candidate check. Valid exactly as long as the evaluator state is unchanged:
+/// the map is replaced with a fresh one in `set_evaluation_data` and
+/// `commit_check`. Until then it dedups a candidate that appears more than
+/// once in a batch, and across scoring calls on the same picker state. It is
+/// shared (via `Arc`) by `copy`/`clone`, so copies made by `station.copy()`
+/// share it too. Gamma evaluation is a pure function of (evaluator state,
+/// check), so a hit returns exactly what recomputation would; an LER estimate
+/// is reused rather than resampled.
+type EvalMemo = Arc<Mutex<HashMap<Vec<(PyWire, u8)>, (f64, Vec<usize>)>>>;
+
+/// A candidate awaiting evaluation: its index in the candidate list, its
+/// virtual Zs, and its memo key.
+type PendingEval = (usize, Vec<usize>, Vec<(PyWire, u8)>);
+
+fn _memo_key(check: &SparsePauli) -> Vec<(PyWire, u8)> {
+    let mut key: Vec<_> = check
+        .paulis
+        .iter()
+        .map(|(w, p)| (_to_py_wire(w.clone()), *p))
+        .collect();
+    key.sort_unstable();
+    key
+}
 
 fn _to_rust_wire(py_wire: PyWire) -> Wire {
     if py_wire.0 == -1 {
@@ -67,6 +96,8 @@ pub struct CheckPicker {
     check_group: Option<CheckGroup>,
     /// Possible CheckDecoder data structure
     check_decoder: Option<CheckDecoder>,
+    /// Shared memo of candidate evaluations for the current evaluator state
+    eval_memo: EvalMemo,
 }
 
 #[pymethods]
@@ -131,6 +162,7 @@ impl CheckPicker {
             check_evaluator: None,
             check_group: None,
             check_decoder: None,
+            eval_memo: EvalMemo::default(),
         }
     }
 
@@ -164,6 +196,8 @@ impl CheckPicker {
             self.check_data.1.clone(),
             ancilla,
         ));
+        // New evaluator state -> previously memoized evaluations no longer apply.
+        self.eval_memo = EvalMemo::default();
     }
 
     /// Sets the target set of wires to use as support for the check.
@@ -229,29 +263,56 @@ impl CheckPicker {
             "Please first set the check's support"
         );
         let checks = self.check_decoder.as_ref().unwrap().find_checks();
-        let mut best_check = None;
-        let mut best_cost = f64::MAX;
-        for check in checks {
-            let vzs = if self.logical_data.0.is_empty() {
-                Vec::new()
-            } else {
-                self.check_evaluator.as_ref().unwrap().compute_vzs(&check)
-            };
-            let cost = self
-                .check_evaluator
-                .as_ref()
-                .unwrap()
-                .evaluate(&check, &vzs);
-            if cost < best_cost {
-                best_cost = cost;
-                best_check = Some((check, vzs));
-            }
-        }
-        if let Some((check, vzs)) = best_check {
-            Some((self.commit_check(check, vzs), best_cost))
-        } else {
-            None
-        }
+        self.evaluate_and_commit_best(checks)
+    }
+
+    /// Batched form of `find_good_checks`: decodes the candidates of every
+    /// window in one call, scores them all together, and commits the single
+    /// cheapest one.
+    ///
+    /// Equivalent to running `set_support` + `find_good_checks` once per window
+    /// on independent copies and keeping the lowest-cost result: every window
+    /// is decoded and scored against the same uncommitted state either way, and
+    /// candidates stay in window order (and, within a window, in `find_checks`
+    /// order) so ties resolve to the same candidate. Batching lets all
+    /// windows' candidates be decoded and scored in one parallel pass instead
+    /// of one window at a time.
+    ///
+    /// `seeds` supplies one decoder seed per window, `None` meaning OS-seeded as
+    /// in `set_support`; the caller owns the draw order so a seeded search
+    /// stays reproducible.
+    pub fn find_good_checks_windowed(
+        &self,
+        windows: Vec<Vec<PyWire>>,
+        paulis: Vec<u8>,
+        seeds: Vec<Option<u64>>,
+    ) -> Option<(Self, f64)> {
+        assert!(
+            self.check_evaluator.is_some(),
+            "Please first set the evaluation data"
+        );
+        assert_eq!(
+            windows.len(),
+            seeds.len(),
+            "Expected one decoder seed per window"
+        );
+        let decoded: Vec<Vec<SparsePauli>> = windows
+            .into_par_iter()
+            .zip(seeds)
+            .map(|(window, seed)| {
+                let wires: Vec<_> = window.into_iter().map(_to_rust_wire).collect();
+                let decoder = CheckDecoder::new(
+                    &self.circuit,
+                    &wires,
+                    &paulis,
+                    &self.logical_data.0,
+                    &self.logical_data.1,
+                    seed,
+                );
+                decoder.find_checks()
+            })
+            .collect();
+        self.evaluate_and_commit_best(decoded.into_iter().flatten().collect())
     }
 
     /// Returns a python compatible description of the current circuit
@@ -299,6 +360,83 @@ impl CheckPicker {
 }
 
 impl CheckPicker {
+    /// Scores every candidate in `checks` against the current evaluator state.
+    /// Returns one `(virtual zs, cost)` per input, in input order.
+    ///
+    /// Candidates already in `eval_memo` are served from it; the rest go
+    /// through a single `evaluate_batch` call, so the fresh candidates are
+    /// scored in one parallel pass, each distinct one only once.
+    /// Because the costs are collected by index rather than compared as they
+    /// arrive, the outcome does not depend on which candidates happened to be
+    /// memoized.
+    fn score_checks(&self, checks: &[SparsePauli]) -> Vec<(Vec<usize>, f64)> {
+        let mut scored: Vec<Option<(Vec<usize>, f64)>> = vec![None; checks.len()];
+        let mut pending: Vec<PendingEval> = Vec::new();
+        let mut pending_keys: HashSet<Vec<(PyWire, u8)>> = HashSet::new();
+        let mut repeats: Vec<(usize, Vec<(PyWire, u8)>)> = Vec::new();
+        for (index, check) in checks.iter().enumerate() {
+            let key = _memo_key(check);
+            if let Some((cost, vzs)) = self.eval_memo.lock().unwrap().get(&key).cloned() {
+                scored[index] = Some((vzs, cost));
+                continue;
+            }
+            if pending_keys.contains(&key) {
+                repeats.push((index, key));
+                continue;
+            }
+            pending_keys.insert(key.clone());
+            let vzs = if self.logical_data.0.is_empty() {
+                Vec::new()
+            } else {
+                self.check_evaluator.as_ref().unwrap().compute_vzs(check)
+            };
+            pending.push((index, vzs, key));
+        }
+        if !pending.is_empty() {
+            let evaluator = self.check_evaluator.as_ref().unwrap();
+            let items: Vec<(SparsePauli, Vec<usize>)> = pending
+                .iter()
+                .map(|(index, vzs, _)| (checks[*index].clone(), vzs.clone()))
+                .collect();
+            let costs = evaluator.evaluate_batch(&items);
+            let mut memo = self.eval_memo.lock().unwrap();
+            for ((index, vzs, key), cost) in pending.into_iter().zip(costs) {
+                memo.insert(key, (cost, vzs.clone()));
+                scored[index] = Some((vzs, cost));
+            }
+            for (index, key) in repeats {
+                let (cost, vzs) = memo[&key].clone();
+                scored[index] = Some((vzs, cost));
+            }
+        }
+        scored
+            .into_iter()
+            .map(|entry| entry.expect("every candidate is either memoized or evaluated"))
+            .collect()
+    }
+
+    /// Scores `checks` and commits the cheapest one. Ties go to the earliest
+    /// candidate, so the winner only depends on the order of `checks`. Returns
+    /// `None` when no candidate costs less than `f64::MAX`.
+    fn evaluate_and_commit_best(&self, mut checks: Vec<SparsePauli>) -> Option<(Self, f64)> {
+        if checks.is_empty() {
+            return None;
+        }
+        let mut scored = self.score_checks(&checks);
+        let mut best: Option<usize> = None;
+        let mut best_cost = f64::MAX;
+        for (index, (_, cost)) in scored.iter().enumerate() {
+            if *cost < best_cost {
+                best_cost = *cost;
+                best = Some(index);
+            }
+        }
+        let best = best?;
+        let (vzs, _) = scored.swap_remove(best);
+        let check = checks.swap_remove(best);
+        Some((self.commit_check(check, vzs), best_cost))
+    }
+
     /// Commits a check
     fn commit_check(&self, check: SparsePauli, vzs: Vec<usize>) -> Self {
         let ancilla = self.check_evaluator.as_ref().unwrap().get_ancilla();
@@ -323,6 +461,8 @@ impl CheckPicker {
             check_evaluator: None,
             check_group: None,
             check_decoder: None,
+            // Committing changes the circuit and check data; start a fresh memo.
+            eval_memo: EvalMemo::default(),
         }
     }
 }
