@@ -288,6 +288,12 @@ class TestNoiseModels(unittest.TestCase):
                 )
             self.assertIn("2-character", str(cm.exception))
 
+        # The identity is not an error generator.
+        with self.assertRaisesRegex(ValueError, "identity"):
+            NoiseModel.from_backend(
+                backend, layout=layout, uniform_gate_noise=False, pauli_bases=["II", "XX"]
+            )
+
         # Non-string entries (e.g. Pauli objects) are rejected — match PauliLindbladMap's
         # sparse-form contract.
         with self.assertRaises(ValueError) as cm:

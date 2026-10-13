@@ -1,0 +1,14 @@
+---
+fixes:
+  - |
+    A gate infidelity is now distributed exactly across the Pauli error generators of the
+    channel it describes, both for a uniform
+    :attr:`~qiskit_paulice.noise_models.NoiseModel.gate_noise` and for the gate-wise models
+    :meth:`~qiskit_paulice.noise_models.NoiseModel.from_backend` builds, which previously carried
+    less error than the uniform model for the same backend data. ``from_backend`` now rejects
+    malformed or identity ``pauli_bases`` entries, and bases that cannot produce an edge's error.
+upgrade:
+  - |
+    A uniform :attr:`~qiskit_paulice.noise_models.NoiseModel.gate_noise` must now lie in
+    ``[0, 0.75)``, the range on which a two-qubit depolarizing channel exists, instead of
+    ``[0, 3)``.

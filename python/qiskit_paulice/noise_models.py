@@ -26,9 +26,7 @@ UniformGateNoise = float
 """An average gate infidelity ``p`` for every 2-qubit gate.
 
 A depolarizing channel is applied after each 2-qubit gate: each of the ``15`` non-identity 2-qubit
-Paulis occurs with probability ``d / 15``, where ``d = 5 p / 4`` is the total error probability,
-since average infidelity is ``D / (D + 1)`` of it for dimension ``D = 4`` [Nielsen, Phys. Lett. A
-303, 249 (2002)]. The channel exists only for ``d < 15 / 16``, so ``p`` must lie in ``[0, 0.75)``.
+Paulis occurs with probability ``d / 15``, where ``d = 5 p / 4`` is the total error probability.
 """
 
 LayeredGateNoise = dict[tuple[tuple[int, int], ...], list[tuple[Pauli | str, float]]]
@@ -166,9 +164,7 @@ class NoiseModel:
                 defines the virtual qubit indexing (virtual qubit 0 maps to ``layout[0]``, etc.).
             uniform_gate_noise: If ``True``, ``gate_noise`` is a :data:`.UniformGateNoise`: the mean
                 reported error over all edges. If ``False``, it is a :data:`.GateWiseNoise` with a
-                channel per edge built from that edge's reported error. Both read the error as an
-                average gate infidelity and give the channel the total error probability ``5 / 4``
-                of it, as in :data:`.UniformGateNoise`.
+                channel per edge built from that edge's reported error.
             pauli_bases: For :data:`.GateWiseNoise` models, the generators of each edge's channel:
                 2-character Pauli strings paired left-to-right with the edge tuple, so ``"XZ"`` on
                 edge ``(a, b)`` places ``X`` on ``a`` and ``Z`` on ``b``. They share one rate,
@@ -182,7 +178,8 @@ class NoiseModel:
 
         Raises:
             ValueError: Backend is missing calibration data, layout contains invalid qubit indices,
-                a Pauli basis is malformed, or ``pauli_bases`` cannot produce an edge's error.
+                a Pauli basis is malformed or ``"II"``, or ``pauli_bases`` cannot produce an
+                edge's error.
         """
         # Make sure the inputs are valid
         if not all(0 <= q < backend.num_qubits for q in layout):
@@ -200,6 +197,8 @@ class NoiseModel:
                         "Each Pauli basis must be a 2-character string over I, X, Y, and Z. "
                         f"Got: {basis!r}"
                     )
+                if basis == "II":
+                    raise ValueError("The identity 'II' is not an error and cannot be a basis.")
 
         # Mapping from physical to virtual qubit indices.
         phys_to_virt = {phys: virt for virt, phys in enumerate(layout)}

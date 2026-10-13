@@ -1,9 +1,0 @@
----
-fixes:
-  - |
-    :meth:`~qiskit_paulice.noise_models.NoiseModel.from_backend` with ``uniform_gate_noise=False``
-    now reads each edge's reported error as an average gate infidelity, as the uniform path does,
-    and sets the edge's generator rate so the channel has total error probability ``5 / 4`` of
-    it. With the default bases the gate-wise and uniform models agree; previously the gate-wise
-    model carried ``20%`` less error. A malformed ``pauli_bases`` entry, or bases that cannot
-    produce an edge's error, now raise ``ValueError``.
