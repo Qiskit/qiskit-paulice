@@ -19,6 +19,7 @@ pub mod circuit_building;
 pub mod coverage;
 pub mod cumulant_table;
 pub mod generator_table;
+pub mod ler;
 pub mod metric;
 pub mod noise_generators;
 pub mod noise_model;

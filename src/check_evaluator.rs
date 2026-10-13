@@ -70,7 +70,7 @@ impl CheckEvaluator {
         coverage.set_check_cumulants(&all_check_qubits, &all_virtual_zs);
         coverage.set_logical_cumulants(&self.stabilizers, &self.measured_qubits);
         match self.metric {
-            Metric::LogicalErrorRate(nshots) => coverage.approximate_psr_ler(nshots).1,
+            Metric::LogicalErrorRate(nshots) => coverage.approximate_psr_ler(nshots, None).1,
             Metric::Gamma => coverage.gamma_apx(),
             Metric::BalancedGamma => coverage.balanced_gamma_apx(),
         }
@@ -117,7 +117,7 @@ impl CheckEvaluator {
         coverage.set_check_cumulants(&self.current_checks, &self.current_virtual_zs);
         coverage.set_logical_cumulants(&self.stabilizers, &self.measured_qubits);
         match self.metric {
-            Metric::LogicalErrorRate(nshots) => coverage.approximate_psr_ler(nshots).1,
+            Metric::LogicalErrorRate(nshots) => coverage.approximate_psr_ler(nshots, None).1,
             Metric::Gamma => coverage.gamma_apx(),
             Metric::BalancedGamma => coverage.balanced_gamma_apx(),
         }
