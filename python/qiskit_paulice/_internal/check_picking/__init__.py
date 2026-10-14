@@ -12,6 +12,8 @@
 
 """Main interface for check picking."""
 
+from collections.abc import Callable, Sequence
+
 from qiskit import QuantumCircuit
 
 from .._internal_r import NoiseModel
@@ -27,14 +29,36 @@ _METHODS = {
 }
 
 
+class _DeferredCircuits(Sequence):
+    """The variants of one search, each built when it is indexed.
+
+    A search records one variant per committed check, and its caller reads the
+    one it wants, so building them all up front would be mostly wasted. Every
+    indexing builds the variant afresh; callers that read a variant more than
+    once keep the result themselves, as each ``CheckedCircuit`` does.
+    """
+
+    def __init__(self, builders: Sequence[Callable[[], QuantumCircuit]]):
+        self._builders = list(builders)
+
+    def __len__(self) -> int:
+        return len(self._builders)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[i] for i in range(*index.indices(len(self)))]
+        return self._builders[index]()
+
+
 class CheckedCircuits:
     """Internal data container holding every variant produced by a single
     ``pick_checks`` run -- the bare circuit followed by one circuit per
     committed check.
 
     Attributes:
-        circuits: List of ``QuantumCircuit``s; ``circuits[k]`` has the first
-            ``k`` checks committed (``circuits[0]`` is the bare payload).
+        circuits: Sequence of ``QuantumCircuit``s; ``circuits[k]`` has the first
+            ``k`` checks committed (``circuits[0]`` is the bare payload). Each
+            entry is built when it is accessed, so reading one builds one.
         check_qubits: Qubit indices of the ancillas (one per committed check).
         virtual_zs: For each committed check, the list of qubit indices whose
             Z-basis outcomes XOR together to give that check's syndrome bit.
@@ -121,7 +145,11 @@ def pick_checks(
     )
     if verbose:
         print("[CHECK PICKING] Initial metric value:", check_picker.get_current_energy())
-    circuits, check_qubits, virtual_zs, costs, committed_targets = method(
+    # The search methods hand back one builder per variant rather than the
+    # variants themselves; see `_DeferredCircuits`.
+    builders, check_qubits, virtual_zs, costs, committed_targets = method(
         check_picker, targets, verbose=verbose, seed=seed, **kwargs
     )
-    return CheckedCircuits(circuits, check_qubits, virtual_zs, costs, committed_targets)
+    return CheckedCircuits(
+        _DeferredCircuits(builders), check_qubits, virtual_zs, costs, committed_targets
+    )

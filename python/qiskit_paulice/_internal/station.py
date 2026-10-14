@@ -109,8 +109,20 @@ class CheckPickerStation:
     def get_circuit(self) -> QuantumCircuit:
         """Returns the current circuit
         """
+        return self.get_circuit_deferred()()
+
+    def get_circuit_deferred(self) -> typing.Callable[[], QuantumCircuit]:
+        """Snapshots the current circuit, returning a thunk that converts it.
+
+        The rustiq-side gate list has to be taken now, as a snapshot of picker
+        state that the next commit replaces. Building the qiskit circuit from
+        it validates every instruction on ``append``, and a search records one
+        variant per committed check while its caller reads one. So the
+        conversion waits until someone asks for that variant.
+        """
         rs_circuit = self.check_picker.get_circuit()
-        return convert_to_qiskit_circuit(rs_circuit, self.tot_nqbits)
+        nqbits = self.tot_nqbits
+        return lambda: convert_to_qiskit_circuit(rs_circuit, nqbits)
 
     def commit_check(self, check: list[bool]):
         """Commits a check specified by its coordinates

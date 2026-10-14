@@ -107,6 +107,13 @@ class FaultRates(NamedTuple):
 class CheckedCircuit:
     """A quantum circuit and information about spacetime Pauli checks it contains.
 
+    Instances returned by :func:`~qiskit_paulice.add_pauli_checks` build :attr:`circuit`
+    on first access rather than up front, so reading the check metadata of every variant
+    (:attr:`cost`, :attr:`check_support`, ...) builds no circuit. The circuit is built once and
+    kept; :attr:`circuit` is otherwise an ordinary attribute. Anything that reads
+    :attr:`circuit` builds it, including ``repr()``. Concurrent first reads of the same
+    instance may each build the circuit, but they yield equal circuits.
+
     Attributes:
         circuit: A quantum circuit containing ``0`` or more spacetime Pauli checks.
         target_qubits: Qubit indices of ``circuit`` which were used to entangle the check
@@ -135,6 +142,9 @@ class CheckedCircuit:
     def __post_init__(self) -> None:
         """Reject non-terminal measurements and coerce mutable sequence inputs to tuples."""
         _validate_terminal_measurements(self.circuit)
+        self._coerce_metadata()
+
+    def _coerce_metadata(self) -> None:
         object.__setattr__(self, "target_qubits", tuple(self.target_qubits))
         object.__setattr__(self, "check_qubits", tuple(self.check_qubits))
         object.__setattr__(
@@ -142,6 +152,71 @@ class CheckedCircuit:
             "check_support",
             tuple(tuple(s) for s in self.check_support),
         )
+
+    @classmethod
+    def _deferred(
+        cls,
+        build_circuit: Callable[[], QuantumCircuit],
+        *,
+        target_qubits: Iterable[int] = (),
+        check_qubits: Iterable[int] = (),
+        check_support: Iterable[Iterable[int]] = (),
+        cost: float | None = None,
+        cost_metric: str | None = None,
+    ) -> CheckedCircuit:
+        """Build an instance whose ``circuit`` comes from ``build_circuit()`` on first read.
+
+        The metadata fields are set eagerly, so a caller that only inspects check
+        metadata never runs ``build_circuit``. Used by
+        :func:`~qiskit_paulice.add_pauli_checks`.
+        """
+        obj = cls.__new__(cls)
+        object.__setattr__(obj, "target_qubits", target_qubits)
+        object.__setattr__(obj, "check_qubits", check_qubits)
+        object.__setattr__(obj, "check_support", check_support)
+        object.__setattr__(obj, "cost", cost)
+        object.__setattr__(obj, "cost_metric", cost_metric)
+        object.__setattr__(obj, "_build_circuit", build_circuit)
+        # The circuit is validated when it is built, not here, so that building
+        # the instance does not build the circuit.
+        obj._coerce_metadata()
+        return obj
+
+    def __getattr__(self, name: str) -> Any:
+        """Assemble a deferred ``circuit`` on first access.
+
+        Only reached when normal lookup fails, which for ``circuit`` means :meth:`_deferred`
+        built this instance and the circuit has not been assembled yet.
+        """
+        if name == "circuit" and "circuit" in self.__dict__:
+            # A concurrent first read stored it after this thread's normal lookup failed.
+            return self.__dict__["circuit"]
+        build_circuit = self.__dict__.get("_build_circuit") if name == "circuit" else None
+        if build_circuit is None:
+            raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
+        try:
+            circuit = build_circuit()
+        except AttributeError as exc:
+            # Re-raised so that `hasattr` and `getattr(..., default)` cannot hide it.
+            raise RuntimeError("building the deferred circuit raised AttributeError") from exc
+        _validate_terminal_measurements(circuit)
+        object.__setattr__(self, "circuit", circuit)
+        # The builder closes over every variant of the call; keeping it would pin them all.
+        self.__dict__.pop("_build_circuit", None)
+        return circuit
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Return the picklable state, assembling a deferred ``circuit`` first."""
+        # A pending `_build_circuit` closes over the picker's output and does not pickle.
+        circuit = self.circuit
+        state = {k: v for k, v in self.__dict__.items() if k != "_build_circuit"}
+        state["circuit"] = circuit
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore from :meth:`__getstate__`, which the frozen dataclass forbids doing directly."""
+        for key, value in state.items():
+            object.__setattr__(self, key, value)
 
     @cached_property
     def uncovered_paulis(self) -> tuple[UncoveredPauli, ...]:
