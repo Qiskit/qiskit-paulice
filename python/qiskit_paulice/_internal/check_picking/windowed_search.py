@@ -53,28 +53,36 @@ def windowed_iterator(support, min_size, max_size, number_of_windows, ntries=30)
             trials += 1
 
 
-def _get_good_checks_randomized(support, max_width, check_picker, ntries, paulis=None):
+def _get_best_check_randomized(support, max_width, check_picker, ntries, paulis=None):
+    """Draws random windows of the support and commits the best check over all of them
 
+    All windows are handed to the picker in one call, which decodes them and
+    scores their candidates against the same uncommitted state in one parallel
+    pass. Returns ``(picker, score)``, or ``None`` if no window yielded a check.
+    """
     it1 = windowed_iterator(
         support, int(0.15 * len(support)), int(max_width * len(support)), 2, ntries // 2
     )
     it2 = windowed_iterator(
         support, int(0.15 * len(support)), int(max_width * len(support)), 1, ntries // 2
     )
-    all_candidates = []
-    it = itertools.chain(it1, it2)
-    for actual_support in it:
-        picker_copy = check_picker.copy()
+    windows = []
+    seeds = []
+    for actual_support in itertools.chain(it1, it2):
+        windows.append(actual_support)
         # Derive a Rust-side seed from `np.random` so the decoder's middle-wire
         # choice is reproducible whenever the caller has seeded `np.random`. The
-        # int(...) cast avoids passing a numpy scalar through PyO3.
-        rust_seed = int(np.random.randint(0, 2**32 - 1, dtype=np.int64))
-        picker_copy.set_support(actual_support, paulis or [1, 2, 3], seed=rust_seed)
-        score = picker_copy.find_good_check()
-        if score is not None:
-            candidate = (picker_copy, score)
-            all_candidates.append(candidate)
-    return all_candidates
+        # int(...) cast avoids passing a numpy scalar through PyO3. Drawn one per
+        # window, in iterator order: `np.random` state is what makes a seeded run
+        # repeatable.
+        seeds.append(int(np.random.randint(0, 2**32 - 1, dtype=np.int64)))
+    if not windows:
+        return None
+    picker_copy = check_picker.copy()
+    score = picker_copy.find_good_checks_windowed(windows, paulis or [1, 2, 3], seeds)
+    if score is None:
+        return None
+    return (picker_copy, score)
 
 
 def windowed_check_picker(
@@ -112,17 +120,16 @@ def windowed_check_picker(
             )
         support = check_picker.get_wires(target)
 
-        candidatechecks = _get_good_checks_randomized(
+        best_check = _get_best_check_randomized(
             support, max_width, check_picker, ntries, paulis
         )
-        if not candidatechecks:
+        if best_check is None:
             # No valid check exists for this target (e.g. a wire too shallow to
-            # support one, as on GHZ endpoints). Skip it rather than crashing on
-            # an empty ``min``; the target simply gets no check.
+            # support one, as on GHZ endpoints). Skip it rather than crashing;
+            # the target simply gets no check.
             if verbose:
                 print(f"[WIN] No valid check found for target {target}; skipping.")
             continue
-        best_check = min(candidatechecks, key=lambda x: x[-1])
         if verbose:
             print(f"[WIN] Best check has score: {best_check[-1]}.")
         check_picker = best_check[0]

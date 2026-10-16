@@ -1,0 +1,9 @@
+---
+features:
+  - |
+    The windowed search of :func:`qiskit_paulice.add_pauli_checks` now decodes all
+    windows for a target in parallel and scores their candidates as one batch. With
+    ``cost="gamma"``, a seeded search picks the same checks as before. With
+    ``cost="LER"``, a candidate that appears in several windows is now estimated once and
+    that estimate is reused, so LER searches can differ slightly; they were never
+    seed-reproducible.
