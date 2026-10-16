@@ -278,9 +278,36 @@ impl<'a> Coverage<'a> {
             .into_iter()
             .map(|m| *m.lock().unwrap())
             .sum();
-        (
-            accepted_errors as f64 / nshots as f64,
-            accepted_logical_errors as f64 / accepted_errors as f64,
-        )
+        psr_and_ler(accepted_errors, accepted_logical_errors, nshots)
+    }
+}
+
+/// The post-selection rate and the logical error rate among accepted shots.
+///
+/// When post-selection rejects every shot the rate is undefined. A check set
+/// that rejects every shot is useless, so it ranks last at 1 rather than NaN,
+/// which would compare false against every other candidate.
+fn psr_and_ler(accepted: i32, accepted_logical: i32, nshots: usize) -> (f64, f64) {
+    if accepted == 0 {
+        return (0.0, 1.0);
+    }
+    (
+        accepted as f64 / nshots as f64,
+        accepted_logical as f64 / accepted as f64,
+    )
+}
+
+#[cfg(test)]
+mod psr_and_ler_tests {
+    use super::psr_and_ler;
+
+    #[test]
+    fn no_accepted_shot_is_the_worst_ler() {
+        assert_eq!(psr_and_ler(0, 0, 100), (0.0, 1.0));
+    }
+
+    #[test]
+    fn accepted_shots_give_the_ratios() {
+        assert_eq!(psr_and_ler(50, 5, 100), (0.5, 0.1));
     }
 }
