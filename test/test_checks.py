@@ -29,6 +29,7 @@ from qiskit_paulice import CheckedCircuit
 from qiskit_paulice import checks as checks_mod
 from qiskit_paulice._internal import Metric as _Metric
 from qiskit_paulice._internal import station as station_mod
+from qiskit_paulice._internal.check_picking.windowed_search import windowed_iterator
 from qiskit_paulice._internal.conversion import convert_noise_model as _convert_noise_model
 from qiskit_paulice._internal.station import CheckPickerStation
 from qiskit_paulice.checked_circuit import _fault_channels
@@ -162,7 +163,7 @@ class TestAddPauliChecksValidation(unittest.TestCase):
             (NoiseModel(gate_noise="bogus"), "Unrecognized"),
             (NoiseModel(gate_noise=True), "Unrecognized"),
             (NoiseModel(gate_noise=-1e-3), "Uniform gate_noise"),
-            (NoiseModel(gate_noise=3.0), "Uniform gate_noise"),
+            (NoiseModel(gate_noise=0.75), "Uniform gate_noise"),
             (NoiseModel(gate_noise=float("nan")), "Uniform gate_noise"),
             (NoiseModel(gate_noise=float("inf")), "Uniform gate_noise"),
             (NoiseModel(gate_noise=1e-3, readout_noise=0.5), "readout_noise"),
@@ -172,8 +173,8 @@ class TestAddPauliChecksValidation(unittest.TestCase):
                 add_pauli_checks(_clifford(), [1], noise, seed=0)
 
     def test_uniform_gate_noise_range(self):
-        """Uniform gate noise accepts any real number in [0, 3)."""
-        for gate_noise in (0, 0.0, 2.99, np.float32(1e-3), np.int64(0)):
+        """Uniform gate noise accepts any real number in [0, 0.75)."""
+        for gate_noise in (0, 0.0, 0.74, np.float32(1e-3), np.int64(0)):
             with self.subTest(gate_noise=gate_noise):
                 noise = NoiseModel(gate_noise=gate_noise, readout_noise=1e-2)
                 self.assertGreater(len(add_pauli_checks(_clifford(), [1], noise, seed=0)), 0)
@@ -1027,6 +1028,56 @@ class TestCheckPickerStation(unittest.TestCase):
         self.assertLessEqual(coupled.get_dimension(), whole.get_dimension())
         self.assertEqual(decoupled.get_current_energy(), coupled.get_current_energy())
         self.assertLess(decoupled.get_current_energy(), whole.get_current_energy())
+
+    def test_windowed_batch_matches_one_search_per_window(self):
+        """Scoring every window in one call commits the same check, at the same cost, as
+        searching each window on its own copy and keeping the cheapest result."""
+        payload = _clifford(nq=6, layers=4).remove_final_measurements(inplace=False)
+        noise = [_convert_noise_model(_DEFAULT_NOISE, _clifford(nq=6, layers=4))]
+        # Copies of one station share its evaluation memo, so each side gets its own
+        # station; otherwise the batched call would just read back the other's costs.
+        station = CheckPickerStation(payload, 2, _Metric.gamma(), noise)
+        batched = CheckPickerStation(payload, 2, _Metric.gamma(), noise)
+        np.random.seed(3)
+        support = station.get_wires(2)
+        windows = list(windowed_iterator(support, 3, len(support), 1, 8))
+        seeds = [int(s) for s in np.random.randint(0, 2**32 - 1, size=len(windows), dtype=np.int64)]
+        self.assertGreater(len(windows), 1)
+
+        one_by_one = []
+        for window, seed in zip(windows, seeds, strict=True):
+            candidate = station.copy()
+            candidate.set_support(window, [1, 2, 3], seed=seed)
+            score = candidate.find_good_check()
+            if score is not None:
+                one_by_one.append((candidate, score))
+        expected, expected_score = min(one_by_one, key=lambda x: x[-1])
+
+        score = batched.find_good_checks_windowed(windows, [1, 2, 3], seeds)
+        self.assertEqual(score, expected_score)
+        self.assertEqual(batched.get_check_data(), expected.get_check_data())
+        self.assertEqual(batched.get_circuit(), expected.get_circuit())
+
+    def test_windowed_batch_scores_repeated_candidates_once(self):
+        """A candidate decoded from more than one window gets the same cost as when it
+        appears once, so repeating every window leaves the committed check unchanged."""
+        payload = _clifford(nq=6, layers=4).remove_final_measurements(inplace=False)
+        noise = [_convert_noise_model(_DEFAULT_NOISE, _clifford(nq=6, layers=4))]
+        # Separate stations, so neither side can read the other's costs from a shared
+        # memo: the second copy of each candidate is served within the batch.
+        twice = CheckPickerStation(payload, 2, _Metric.gamma(), noise)
+        once = CheckPickerStation(payload, 2, _Metric.gamma(), noise)
+        np.random.seed(5)
+        support = twice.get_wires(2)
+        windows = list(windowed_iterator(support, 3, len(support), 1, 4))
+        seeds = [int(s) for s in np.random.randint(0, 2**32 - 1, size=len(windows), dtype=np.int64)]
+
+        twice_score = twice.find_good_checks_windowed(windows * 2, [1, 2, 3], seeds * 2)
+        once_score = once.find_good_checks_windowed(windows, [1, 2, 3], seeds)
+        self.assertIsNotNone(once_score)
+        self.assertEqual(twice_score, once_score)
+        self.assertEqual(twice.get_check_data(), once.get_check_data())
+        self.assertEqual(twice.get_circuit(), once.get_circuit())
 
 
 class TestInternalHelpers(unittest.TestCase):

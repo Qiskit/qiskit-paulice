@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import itertools
 import unittest
 
 import numpy as np
@@ -23,7 +24,22 @@ from qiskit_ibm_runtime.fake_provider import FakeFez
 from qiskit_paulice._internal._internal_r import NoiseModel as _NoiseModel
 from qiskit_paulice._internal.conversion import convert_gate_wise_noise, convert_layered_noise
 from qiskit_paulice._internal.simulation import get_gamma
-from qiskit_paulice.noise_models import NoiseModel
+from qiskit_paulice.checked_circuit import _fault_channels
+from qiskit_paulice.noise_models import NoiseModel, _equal_generator_rate
+
+
+def _total_error_probability(paulis: list[str], rate: float) -> float:
+    """Probability that independently firing generators apply a non-identity Pauli, by enumeration."""
+    fire = (1 - np.exp(-2 * rate)) / 2
+    identity = 0.0
+    for pattern in itertools.product((False, True), repeat=len(paulis)):
+        product = Pauli("II")
+        for fired, label in zip(pattern, paulis, strict=True):
+            if fired:
+                product = product.compose(Pauli(label))
+        if not (product.x.any() or product.z.any()):
+            identity += np.prod([fire if fired else 1 - fire for fired in pattern])
+    return 1 - identity
 
 
 class TestNoiseModels(unittest.TestCase):
@@ -97,13 +113,13 @@ class TestNoiseModels(unittest.TestCase):
             # Should have 15 generators (full 2Q Pauli basis minus II)
             self.assertEqual(len(generators), 15)
 
-            # Manual calculation: probability per basis and conversion to rate
-            prob_per_basis = backend_prob / 15
-            expected_rate = -0.5 * np.log(1.0 - 2.0 * prob_per_basis)
+            # d = 5/4 of the infidelity; 15 equal generators are depolarizing at the uniform rate.
+            error_probability = 5 * backend_prob / 4
+            expected_rate = -np.log(1.0 - 16.0 * error_probability / 15.0) / 16.0
 
             # All generators should have the same rate
             for _, rate in generators:
-                self.assertAlmostEqual(rate, expected_rate, places=10)
+                self.assertAlmostEqual(rate, expected_rate, places=12)
 
     def test_from_backend_uniform_manual_calculation(self):
         """Test from_backend uniform noise with manual calculation of expected value."""
@@ -196,17 +212,54 @@ class TestNoiseModels(unittest.TestCase):
             # Check that each edge has only 3 generators
             self.assertEqual(len(generators), 3)
 
-            # Check that only custom bases are used
-            for pauli, rate in generators:
+            # Check that only custom bases are used, all at one rate
+            for pauli, _ in generators:
                 self.assertIn(pauli, custom_bases)
+            rates = {rate for _, rate in generators}
+            self.assertEqual(len(rates), 1)
 
-                # Manual calculation: probability should be divided by 3 (not 15)
-                # since we only have 3 custom bases
-                prob_per_basis = backend_prob / 3
-                expected_rate = -0.5 * np.log(1.0 - 2.0 * prob_per_basis)
+            # Enumerating every firing pattern, the channel's error probability is d = 5p/4.
+            self.assertAlmostEqual(
+                _total_error_probability(custom_bases, rates.pop()), 5 * backend_prob / 4, places=12
+            )
 
-                # Verify the rate matches the expected value
-                self.assertAlmostEqual(rate, expected_rate, places=10)
+    def test_from_backend_gatewise_full_basis_matches_uniform(self):
+        """With the default bases, every edge carries the uniform model's depolarizing channel."""
+        backend = FakeFez()
+        layout = [0, 1]
+        gate_wise = NoiseModel.from_backend(backend, layout=layout, uniform_gate_noise=False)
+        uniform = NoiseModel.from_backend(backend, layout=layout, uniform_gate_noise=True)
+        circuit = QuantumCircuit(2)
+        circuit.cz(0, 1)
+        rates, *_ = _fault_channels(circuit, _NoiseModel.uniform_depolarizing(uniform.gate_noise))
+        gate_wise_rates, *_ = _fault_channels(
+            circuit, _NoiseModel.gate_wise(convert_gate_wise_noise(gate_wise.gate_noise))
+        )
+        self.assertEqual(len(gate_wise_rates), 15)
+        np.testing.assert_allclose(np.sort(gate_wise_rates), np.sort(rates), rtol=1e-12)
+
+    def test_equal_generator_rate(self):
+        """The shared rate reproduces the requested error probability, or raises if it cannot."""
+        # A single generator fires with probability (1 - exp(-2 r)) / 2, and at most 1/2;
+        # 0.45 needs a rate above 1, past the bisection's initial bracket.
+        for error_probability in (0.3, 0.45):
+            rate = _equal_generator_rate(["XX"], error_probability)
+            self.assertAlmostEqual((1 - np.exp(-2 * rate)) / 2, error_probability, places=14)
+        self.assertEqual(_equal_generator_rate(["XX"], 0.0), 0.0)
+        for bases, error_probability in ((["XX"], 0.5), (["XX", "ZZ"], 0.75), (["XX"], -1e-3)):
+            with (
+                self.subTest(bases=bases, error_probability=error_probability),
+                self.assertRaisesRegex(ValueError, "can produce"),
+            ):
+                _equal_generator_rate(bases, error_probability)
+        # Mixed commutation structure: check against the brute-force enumeration.
+        bases = ["XI", "IZ", "YY", "ZX"]
+        for error_probability in (1e-3, 0.3, 0.7):
+            with self.subTest(error_probability=error_probability):
+                rate = _equal_generator_rate(bases, error_probability)
+                self.assertAlmostEqual(
+                    _total_error_probability(bases, rate), error_probability, places=12
+                )
 
     def test_from_backend_invalid_qubits(self):
         """Test from_backend with invalid qubit indices."""
@@ -227,12 +280,19 @@ class TestNoiseModels(unittest.TestCase):
         backend = FakeFez()
         layout = [0, 1, 2]
 
-        # Bases must be 2-character strings; 1-character strings are rejected.
-        with self.assertRaises(ValueError) as cm:
+        # Bases must be 2-character strings over I, X, Y, Z; other strings are rejected.
+        for bases in (["X", "Y", "Z"], ["XA"]):
+            with self.subTest(bases=bases), self.assertRaises(ValueError) as cm:
+                NoiseModel.from_backend(
+                    backend, layout=layout, uniform_gate_noise=False, pauli_bases=bases
+                )
+            self.assertIn("2-character", str(cm.exception))
+
+        # The identity is not an error generator.
+        with self.assertRaisesRegex(ValueError, "identity"):
             NoiseModel.from_backend(
-                backend, layout=layout, uniform_gate_noise=False, pauli_bases=["X", "Y", "Z"]
+                backend, layout=layout, uniform_gate_noise=False, pauli_bases=["II", "XX"]
             )
-        self.assertIn("2-character", str(cm.exception))
 
         # Non-string entries (e.g. Pauli objects) are rejected — match PauliLindbladMap's
         # sparse-form contract.

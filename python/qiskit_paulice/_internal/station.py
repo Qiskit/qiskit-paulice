@@ -157,10 +157,31 @@ class CheckPickerStation:
         """Explores a few different checks & commits the best one
         Might return None if the check decoding algorithm failed
         """
-        new_check_picker = self.check_picker.find_good_checks()
-        if new_check_picker is None:
-            return new_check_picker
-        new_check_picker, score = new_check_picker
+        return self._commit_search_result(self.check_picker.find_good_checks())
+
+    def find_good_checks_windowed(self, windows, paulis=None, seeds=None):
+        """Explores every window in one call & commits the best check found
+
+        Batched form of `find_good_check`. Each window is decoded and scored
+        against the same uncommitted state, so the result matches taking the
+        best of one `set_support`/`find_good_check` pair per window -- but all
+        windows' candidates are decoded and scored in one parallel pass instead
+        of one window at a time. `seeds` holds one decoder seed per window; as with
+        `set_support`, a missing seed leaves that window's decoder OS-seeded.
+
+        Might return None if the check decoding algorithm failed everywhere
+        """
+        return self._commit_search_result(
+            self.check_picker.find_good_checks_windowed(
+                windows, paulis or [1, 2, 3], seeds or [None] * len(windows)
+            )
+        )
+
+    def _commit_search_result(self, result):
+        """Adopts the picker returned by a search & advances the ancilla"""
+        if result is None:
+            return None
+        new_check_picker, score = result
 
         self.check_picker = new_check_picker
         self.set_evaluation_data(self.noise_models, self.metric, self.ancilla + 1)
