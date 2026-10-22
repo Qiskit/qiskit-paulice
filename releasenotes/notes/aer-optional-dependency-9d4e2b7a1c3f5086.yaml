@@ -1,0 +1,7 @@
+---
+upgrade:
+  - |
+    ``qiskit-aer`` is no longer a dependency of ``qiskit-paulice``, which never imports it.
+    The ``test``, ``nbtest`` and ``notebook-dependencies`` extras still install it. Code that
+    used ``AerSimulator`` alongside ``qiskit-paulice`` without installing an extra must now
+    install ``qiskit-aer`` itself.

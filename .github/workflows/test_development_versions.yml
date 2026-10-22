@@ -21,7 +21,8 @@ jobs:
       max-parallel: 4
       matrix:
         os: [ubuntu-latest]
-        python-version: ["3.10", "3.13"]
+        # Qiskit main requires Python >=3.11 (Qiskit/qiskit#17135); released Qiskit still supports 3.10.
+        python-version: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v7
       - name: Set up Rust
