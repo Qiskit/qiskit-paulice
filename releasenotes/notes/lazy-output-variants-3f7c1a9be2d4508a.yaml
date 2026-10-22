@@ -1,0 +1,21 @@
+---
+upgrade:
+  - |
+    :func:`qiskit_paulice.add_pauli_checks` now assembles each output circuit the first time
+    :attr:`~qiskit_paulice.checked_circuit.CheckedCircuit.circuit` is read, rather than
+    assembling all of them before it returns. Check metadata
+    (:attr:`~qiskit_paulice.checked_circuit.CheckedCircuit.cost` and the qubit tuples) is
+    still populated eagerly, so nothing about the returned sequence's shape or contents
+    changes.
+
+    One consequence is visible: when the input gate set cannot express the inserted checks,
+    the resulting :class:`UserWarning` is now raised on that first read of
+    :attr:`~qiskit_paulice.checked_circuit.CheckedCircuit.circuit` instead of from
+    :func:`~qiskit_paulice.add_pauli_checks` itself. Code that suppresses or asserts on that
+    warning needs the circuit read inside the same block.
+features:
+  - |
+    :func:`qiskit_paulice.add_pauli_checks` no longer builds the output circuits that are
+    never read. ``add_pauli_checks(...)[-1].circuit`` assembles one circuit instead of one
+    per target qubit, and reading ``[c.cost for c in result]`` to watch the cost converge as
+    checks are added assembles none at all.

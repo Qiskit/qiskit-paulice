@@ -14,7 +14,10 @@
 
 from __future__ import annotations
 
+import copy
+import pickle
 import unittest
+import unittest.mock
 import warnings
 from dataclasses import replace
 
@@ -23,7 +26,9 @@ from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister, transpile
 from qiskit.quantum_info import Clifford, Pauli, PauliLindbladMap, StabilizerState
 from qiskit.transpiler import CouplingMap
 from qiskit_paulice import CheckedCircuit
+from qiskit_paulice import checks as checks_mod
 from qiskit_paulice._internal import Metric as _Metric
+from qiskit_paulice._internal import station as station_mod
 from qiskit_paulice._internal.check_picking.windowed_search import windowed_iterator
 from qiskit_paulice._internal.conversion import convert_noise_model as _convert_noise_model
 from qiskit_paulice._internal.station import CheckPickerStation
@@ -256,6 +261,7 @@ class TestAddPauliChecksShallowWires(unittest.TestCase):
         n = 5
         for mode in _MODES:
             with self.subTest(mode=mode), warnings.catch_warnings():
+                # GHZ's {h, cx} basis is non-universal, so reading `.circuit` warns.
                 warnings.simplefilter("ignore", UserWarning)
                 final = _add_pauli_checks_in(mode, _ghz(n), list(range(n)), _DEFAULT_NOISE, seed=0)[
                     -1
@@ -277,6 +283,182 @@ class TestAddPauliChecksShallowWires(unittest.TestCase):
                     _register_bits(final.circuit, bitstring, "meas") for bitstring in counts
                 }
                 self.assertLessEqual(payloads, {"0" * n, "1" * n})
+
+
+class TestAddPauliChecksDeferredCircuits(unittest.TestCase):
+    """Output circuits are assembled on first read, one variant at a time."""
+
+    def _counting_assembly(self):
+        """Patch the last assembly step to count how many variants get built."""
+        assembled = []
+        original = checks_mod._translate_to_basis
+
+        def counted(circuit, basis_gates):
+            assembled.append(circuit.num_qubits)
+            return original(circuit, basis_gates)
+
+        return assembled, unittest.mock.patch.object(checks_mod, "_translate_to_basis", counted)
+
+    def test_metadata_only_assembles_nothing(self):
+        # The docstring's headline use -- watching the cost converge as checks
+        # are added -- must not pay for a single output circuit.
+        assembled, patch = self._counting_assembly()
+        with patch:
+            result = add_pauli_checks(_clifford(), [0, 1], _DEFAULT_NOISE, seed=0)
+            self.assertEqual(len(result), 3)
+            self.assertEqual([len(v.check_qubits) for v in result], [0, 1, 2])
+            self.assertTrue(all(v.cost is not None for v in result))
+        self.assertEqual(assembled, [])
+
+    def test_reading_one_circuit_assembles_one(self):
+        assembled, patch = self._counting_assembly()
+        with patch:
+            result = add_pauli_checks(_clifford(), [0, 1], _DEFAULT_NOISE, seed=0)
+            self.assertIsNotNone(result[-1].circuit)
+        self.assertEqual(len(assembled), 1)
+
+    def test_repeated_reads_assemble_once(self):
+        assembled, patch = self._counting_assembly()
+        with patch:
+            result = add_pauli_checks(_clifford(), [0, 1], _DEFAULT_NOISE, seed=0)
+            first = result[1].circuit
+            self.assertIs(result[1].circuit, first)
+        self.assertEqual(len(assembled), 1)
+
+    def _assert_reverse_reads_match_forward(self, run):
+        # Each variant closes over its own check count; reading them backwards
+        # would expose a closure that captured the loop variable by reference.
+        forward = [variant.circuit for variant in run()]
+        backward = run()
+        for k in reversed(range(len(backward))):
+            with self.subTest(variant=k):
+                self.assertEqual(backward[k].circuit, forward[k])
+
+    def test_out_of_order_reads_give_the_right_variant(self):
+        self._assert_reverse_reads_match_forward(
+            lambda: add_pauli_checks(_clifford(), [0, 1], _DEFAULT_NOISE, seed=0)
+        )
+
+    def test_isa_out_of_order_reads_give_the_right_variant(self):
+        self._assert_reverse_reads_match_forward(
+            lambda: add_pauli_checks(
+                _isa_circuit(), [5, 7], _DEFAULT_NOISE, ancilla_qubits=_ANCILLA_PHYS, seed=0
+            )
+        )
+
+    def test_deferred_variant_survives_a_round_trip(self):
+        # Pickling an unread variant must not try to serialize the pending
+        # assembly closure.
+        result = add_pauli_checks(_clifford(), [0], _DEFAULT_NOISE, seed=0)
+        restored = pickle.loads(pickle.dumps(result[-1]))
+        self.assertEqual(restored.check_qubits, result[-1].check_qubits)
+        self.assertEqual(restored.circuit, result[-1].circuit)
+        again = pickle.loads(pickle.dumps(result[-1]))
+        self.assertEqual(again.circuit, result[-1].circuit)
+
+    def test_copies_of_an_unread_variant(self):
+        expected = add_pauli_checks(_clifford(), [0, 1], _DEFAULT_NOISE, seed=0)[-1].circuit
+        for name, make_copy in [
+            ("copy", copy.copy),
+            ("deepcopy", copy.deepcopy),
+            ("replace", lambda v: replace(v, cost=0.0)),
+        ]:
+            with self.subTest(name):
+                unread = add_pauli_checks(_clifford(), [0, 1], _DEFAULT_NOISE, seed=0)[-1]
+                copied = make_copy(unread)
+                self.assertEqual(copied.circuit, expected)
+                self.assertEqual(copied.check_qubits, unread.check_qubits)
+
+    def test_read_variant_releases_its_builder(self):
+        # The builder closes over every variant of the call, so a read variant
+        # that kept it would pin all of them.
+        result = add_pauli_checks(_clifford(), [0, 1], _DEFAULT_NOISE, seed=0)
+        _ = result[-1].circuit
+        self.assertNotIn("_build_circuit", vars(result[-1]))
+        self.assertIn("_build_circuit", vars(result[0]))
+
+    def test_late_first_read_returns_the_stored_circuit(self):
+        # A thread whose normal lookup failed just before another thread stored
+        # the circuit and dropped the builder still reaches `__getattr__`.
+        variant = add_pauli_checks(_clifford(), [0, 1], _DEFAULT_NOISE, seed=0)[-1]
+        circuit = variant.circuit
+        self.assertIs(CheckedCircuit.__getattr__(variant, "circuit"), circuit)
+
+    def test_failed_build_can_be_retried(self):
+        calls = []
+
+        def flaky():
+            calls.append(None)
+            if len(calls) == 1:
+                raise ValueError("transient")
+            return _clifford()
+
+        variant = CheckedCircuit._deferred(flaky)
+        with self.assertRaisesRegex(ValueError, "transient"):
+            _ = variant.circuit
+        self.assertEqual(variant.circuit, _clifford())
+        self.assertEqual(len(calls), 2)
+
+    def test_attribute_error_in_builder_is_not_swallowed(self):
+        # `hasattr` would otherwise report a broken builder as a missing circuit.
+        def broken():
+            raise AttributeError("bug in the builder")
+
+        variant = CheckedCircuit._deferred(broken)
+        with self.assertRaises(RuntimeError) as ctx:
+            hasattr(variant, "circuit")
+        self.assertIsInstance(ctx.exception.__cause__, AttributeError)
+
+    def test_unknown_attribute_still_raises(self):
+        # `__getattr__` handles `circuit` only; typos must not go quiet.
+        result = add_pauli_checks(_clifford(), [0], _DEFAULT_NOISE, seed=0)
+        with self.assertRaises(AttributeError):
+            getattr(result[-1], "no_such_attribute")  # noqa: B009
+
+    def test_missing_circuit_names_circuit(self):
+        empty = CheckedCircuit.__new__(CheckedCircuit)
+        with self.assertRaisesRegex(AttributeError, "'circuit'"):
+            _ = empty.circuit
+
+    def test_non_universal_basis_warns_on_first_read(self):
+        # The basis-translation warning moves with the work that raises it.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            result = add_pauli_checks(_ghz(5), list(range(5)), _DEFAULT_NOISE, seed=0)
+        with self.assertWarns(UserWarning):
+            self.assertIsNotNone(result[-1].circuit)
+
+    def _counting_conversion(self):
+        """Patch the rustiq-to-qiskit conversion to count how often it runs."""
+        converted = []
+        original = station_mod.convert_to_qiskit_circuit
+
+        def counted(circuit, nqbits):
+            converted.append(nqbits)
+            return original(circuit, nqbits)
+
+        return converted, unittest.mock.patch.object(
+            station_mod, "convert_to_qiskit_circuit", counted
+        )
+
+    def test_picker_variants_are_converted_on_demand(self):
+        # The picker records one variant per committed check. Converting every
+        # picker variant up front would undo the deferral of the output assembly.
+        converted, patch = self._counting_conversion()
+        with patch:
+            result = add_pauli_checks(_clifford(), [0, 1], _DEFAULT_NOISE, seed=0)
+            self.assertEqual(len(result), 3)
+            self.assertEqual(converted, [])
+            self.assertIsNotNone(result[-1].circuit)
+        self.assertEqual(len(converted), 1)
+
+    def test_picker_variants_are_converted_once_each(self):
+        converted, patch = self._counting_conversion()
+        with patch:
+            result = add_pauli_checks(_clifford(), [0, 1], _DEFAULT_NOISE, seed=0)
+            for _ in range(3):
+                self.assertIsNotNone(result[1].circuit)
+        self.assertEqual(len(converted), 1)
 
 
 class TestAddPauliChecksBasic(unittest.TestCase):
