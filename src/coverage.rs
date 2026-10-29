@@ -64,7 +64,7 @@ impl<'a> Coverage<'a> {
         &self.logical_cumulants
     }
 
-    fn get_generator_errors(&self) -> Vec<NoiseGenerator> {
+    pub(crate) fn get_generator_errors(&self) -> Vec<NoiseGenerator> {
         build_noise_generators(self.circuit, self.noise_models)
     }
     /// Computes & stores the backcumulants of a collection of checks specified
@@ -218,14 +218,33 @@ impl<'a> Coverage<'a> {
     /// `ler::score_batch`.
     pub fn prepare_psr_ler(&self, nshots: usize, seed: Option<u64>) -> crate::ler::LerJob {
         let error_generators = self.get_generator_errors();
-        let sample = crate::ler::sample_shots(&error_generators, nshots, seed);
-        let tables = crate::ler::LerTables::pack(
+        crate::ler::LerJob::prepare(
+            self.pack_ler(&error_generators),
             &error_generators,
+            nshots,
+            seed,
+        )
+    }
+
+    /// `prepare_psr_ler`, leaving the draw to the device when it would take
+    /// the job.
+    pub fn prepare_psr_ler_deferred(&self, nshots: usize, seed: Option<u64>) -> crate::ler::LerJob {
+        let error_generators = self.get_generator_errors();
+        crate::ler::LerJob::prepare_deferred(
+            self.pack_ler(&error_generators),
+            &error_generators,
+            nshots,
+            seed,
+        )
+    }
+
+    fn pack_ler(&self, error_generators: &[NoiseGenerator]) -> crate::ler::LerTables {
+        crate::ler::LerTables::pack(
+            error_generators,
             &self.post_selected_cumulants,
             &self.logical_cumulants,
             self.circuit.nqbits,
-        );
-        crate::ler::LerJob::new(tables, nshots, sample)
+        )
     }
 
     /// The hash-map scorer, kept as the reference the packed scorer's parity

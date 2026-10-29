@@ -18,6 +18,7 @@ pub mod check_picker;
 pub mod circuit_building;
 pub mod coverage;
 pub mod cumulant_table;
+pub mod engine;
 pub mod generator_table;
 pub mod ler;
 pub mod metric;

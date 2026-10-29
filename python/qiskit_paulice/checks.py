@@ -32,6 +32,7 @@ from ._internal import pick_checks as _pick_checks
 from ._internal.conversion import convert_noise_model as _convert_noise_model
 from ._internal.conversion import convert_stabilizers as _convert_stabilizers
 from ._internal.utils import validate_terminal_measurements as _validate_terminal_measurements
+from .acceleration import install_scoring_engine as _install_scoring_engine
 from .checked_circuit import CheckedCircuit
 from .noise_models import NoiseModel
 
@@ -219,6 +220,7 @@ def add_pauli_checks(
     else:
         raise ValueError(f"Invalid cost value: {cost}")
 
+    _install_scoring_engine()
     _validate_terminal_measurements(circuit)
     has_measurements = any(inst.operation.name == "measure" for inst in circuit.data)
     if stabilizers is None and not has_measurements:

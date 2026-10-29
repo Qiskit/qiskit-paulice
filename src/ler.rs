@@ -100,6 +100,7 @@ pub(crate) fn sample_shot_positions(
 /// `indices[offsets[s]..offsets[s + 1]]` lists the generators that fired in
 /// shot `s`. The draw is per generator and the transpose to per shot is a
 /// counting pass, so no shot is ever written to concurrently.
+#[derive(Clone)]
 pub struct ShotSample {
     pub nshots: usize,
     pub offsets: Vec<u32>,
@@ -118,23 +119,32 @@ pub struct ShotSample {
 /// sample is therefore different on every call but still independent of how
 /// rayon splits the work, and there is one draw path to keep bit-exact.
 pub fn sample_shots(generators: &[NoiseGenerator], nshots: usize, seed: Option<u64>) -> ShotSample {
-    assert!(
-        nshots <= u32::MAX as usize,
-        "shot positions are stored as u32"
-    );
     // One table per distinct lambda, shared by every generator that has it.
     // `lambda = nshots * proba_from_rate(rate)` carries no candidate-dependent
     // term, so for a uniform noise model this is two tables of a few hundred
     // entries however many generators there are.
-    let rates: Vec<f64> = generators.iter().map(|(_, rate)| *rate).collect();
-    let tables = PoissonTables::build(&rates, nshots);
+    let tables = PoissonTables::build(&rates_of(generators), nshots);
+    draw_shots(&tables, nshots, resolve_seed(seed))
+}
 
-    let base = seed.unwrap_or_else(|| rand::rng().random::<u64>());
+fn rates_of(generators: &[NoiseGenerator]) -> Vec<f64> {
+    generators.iter().map(|(_, rate)| *rate).collect()
+}
 
-    let fired: Vec<Vec<u32>> = generators
-        .par_iter()
-        .enumerate()
-        .map(|(index, _)| {
+/// The base seed every generator's stream is keyed on.
+fn resolve_seed(seed: Option<u64>) -> u64 {
+    seed.unwrap_or_else(|| rand::rng().random::<u64>())
+}
+
+/// Draws every generator of `tables` from streams keyed on `base`.
+fn draw_shots(tables: &PoissonTables, nshots: usize, base: u64) -> ShotSample {
+    assert!(
+        nshots <= u32::MAX as usize,
+        "shot positions are stored as u32"
+    );
+    let fired: Vec<Vec<u32>> = (0..tables.num_generators())
+        .into_par_iter()
+        .map(|index| {
             let mut stream = GeneratorStream::new(base, index);
             sample_shot_positions(&mut stream, tables.for_generator(index), nshots)
         })
@@ -185,6 +195,7 @@ pub(crate) fn transpose_to_shots(fired: &[Vec<u32>], nshots: usize) -> ShotSampl
 /// The planes are indexed over only the wires some generator touches, since no
 /// other wire can appear in an accumulated error.
 pub struct LerTables {
+    pub ngen: usize,
     pub wire_words: usize,
     pub post_words: usize,
     pub log_words: usize,
@@ -249,6 +260,7 @@ impl LerTables {
         }
 
         Self {
+            ngen: generators.len(),
             wire_words,
             post_words,
             log_words,
@@ -282,16 +294,87 @@ impl ShotCounts {
 pub struct LerJob {
     pub tables: LerTables,
     pub nshots: usize,
-    sample: ShotSample,
+    sample: Sample,
+}
+
+enum Sample {
+    Drawn(ShotSample),
+    Deferred(DeferredDraw),
+}
+
+/// What a draw left to the device needs, kept so that the host can make the
+/// same draw if the device declines.
+pub struct DeferredDraw {
+    pub poisson: PoissonTables,
+    pub rates: Vec<f64>,
+    /// Already resolved, so an unseeded job draws the same sample wherever it
+    /// is drawn.
+    pub seed: u64,
 }
 
 impl LerJob {
-    pub fn new(tables: LerTables, nshots: usize, sample: ShotSample) -> Self {
+    /// Draws the sample now, on the host.
+    pub fn prepare(
+        tables: LerTables,
+        generators: &[NoiseGenerator],
+        nshots: usize,
+        seed: Option<u64>,
+    ) -> Self {
+        let sample = sample_shots(generators, nshots, seed);
+        Self {
+            tables,
+            nshots,
+            sample: Sample::Drawn(sample),
+        }
+    }
+
+    /// Leaves the draw to the device if it would take the job, and otherwise
+    /// draws now as `prepare` does. Either way the sample is the one
+    /// `sample_shots` would draw.
+    pub fn prepare_deferred(
+        tables: LerTables,
+        generators: &[NoiseGenerator],
+        nshots: usize,
+        seed: Option<u64>,
+    ) -> Self {
+        let rates = rates_of(generators);
+        let poisson = PoissonTables::build(&rates, nshots);
+        let seed = resolve_seed(seed);
+        let sample = if crate::engine::ler_accepts_deferred(&tables, &poisson, &rates, nshots) {
+            Sample::Deferred(DeferredDraw {
+                poisson,
+                rates,
+                seed,
+            })
+        } else {
+            Sample::Drawn(draw_shots(&poisson, nshots, seed))
+        };
         Self {
             tables,
             nshots,
             sample,
         }
+    }
+
+    pub fn deferred(&self) -> Option<&DeferredDraw> {
+        match &self.sample {
+            Sample::Deferred(draw) => Some(draw),
+            Sample::Drawn(_) => None,
+        }
+    }
+
+    fn host_sample(&self) -> std::borrow::Cow<'_, ShotSample> {
+        match &self.sample {
+            Sample::Drawn(sample) => std::borrow::Cow::Borrowed(sample),
+            Sample::Deferred(draw) => {
+                std::borrow::Cow::Owned(draw_shots(&draw.poisson, self.nshots, draw.seed))
+            }
+        }
+    }
+
+    fn score_on_host(&self) -> (ShotCounts, usize) {
+        let sample = self.host_sample();
+        (score_shots(&self.tables, &sample), sample.nonempty)
     }
 
     /// Turns the counts into `(post-selection acceptance, logical error rate)`.
@@ -309,11 +392,24 @@ impl LerJob {
 
 /// Scores a round of jobs, returning each job's counts and non-empty shot
 /// count in input order. A job's result does not depend on which other jobs
-/// share the round.
+/// share the round, nor on whether it was scored on the device.
 pub fn score_batch(jobs: &[LerJob]) -> Vec<(ShotCounts, usize)> {
-    jobs.par_iter()
-        .map(|job| (score_shots(&job.tables, &job.sample), job.sample.nonempty))
-        .collect()
+    if jobs.iter().any(|job| job.deferred().is_some()) {
+        return score_batch_counting_device(jobs).0;
+    }
+    jobs.par_iter().map(LerJob::score_on_host).collect()
+}
+
+/// `score_batch`, also returning how many of the jobs the device scored.
+pub(crate) fn score_batch_counting_device(jobs: &[LerJob]) -> (Vec<(ShotCounts, usize)>, usize) {
+    let device = crate::engine::ler_counts_batch(jobs);
+    let on_device = device.iter().filter(|counted| counted.is_some()).count();
+    let results = jobs
+        .par_iter()
+        .zip(device)
+        .map(|(job, counted)| counted.unwrap_or_else(|| job.score_on_host()))
+        .collect();
+    (results, on_device)
 }
 
 /// Scores every non-empty shot.

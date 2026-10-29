@@ -568,3 +568,160 @@ mod check_picker_tests {
         assert_eq!(picker.eval_memo.lock().unwrap().len(), distinct);
     }
 }
+
+/// Conformance of the evaluator paths that call the engine.
+pub(crate) mod engine_conformance {
+    use super::*;
+
+    /// The device hook rebuilds the evaluator state that `evaluate` builds
+    /// (committed checks plus the new ancilla, committed virtual Zs plus the
+    /// candidate's), so this compares the two on a picker that already holds
+    /// a check.
+    fn device_hook_matches_evaluate_with_a_committed_check() {
+        let gates = [
+            ("H", vec![0]),
+            ("CX", vec![0, 1]),
+            ("S", vec![1]),
+            ("CX", vec![1, 2]),
+            ("H", vec![2]),
+            ("CX", vec![2, 0]),
+            ("CX", vec![0, 1]),
+            ("H", vec![1]),
+        ];
+        let circuit = gates
+            .into_iter()
+            .map(|(name, qubits)| (name.to_string(), qubits))
+            .collect();
+        let noise = || vec![NoiseModel::uniform_depolarizing(0.01)];
+        let mut picker = CheckPicker::new(
+            circuit,
+            Some(5),
+            Some(vec![0, 1, 2]),
+            None,
+            None,
+            None,
+            None,
+        );
+        picker.set_evaluation_data(noise(), Metric::gamma(), 3);
+        picker.set_support(picker.get_wires(0), vec![1, 2, 3], Some(0));
+        let (mut picker, _) = picker.find_good_checks().unwrap();
+        assert!(!picker.check_data.0.is_empty());
+        picker.set_evaluation_data(noise(), Metric::gamma(), 4);
+
+        let mut checks = Vec::new();
+        for qubit in 0..3 {
+            for seed in 0..3 {
+                picker.set_support(picker.get_wires(qubit), vec![1, 2, 3], Some(seed));
+                checks.extend(picker.check_decoder.as_ref().unwrap().find_checks());
+            }
+        }
+        let evaluator = picker.check_evaluator.as_ref().unwrap();
+        let items: Vec<(SparsePauli, Vec<usize>)> = checks
+            .into_iter()
+            .map(|check| {
+                let vzs = evaluator.compute_vzs(&check);
+                (check, vzs)
+            })
+            .collect();
+        assert!(items.iter().any(|(_, vzs)| !vzs.is_empty()));
+
+        let device = evaluator
+            .evaluate_gamma_on_device(&items)
+            .expect("the device declined the batch");
+        assert_eq!(device.len(), items.len());
+        for ((check, vzs), got) in items.iter().zip(&device) {
+            let want = evaluator.evaluate(check, vzs);
+            assert_eq!(got.to_bits(), want.to_bits(), "{got} vs {want}");
+        }
+    }
+
+    /// The chunked LER path gives every candidate exactly what `evaluate`
+    /// gives it, whichever side draws and scores.
+    fn chunked_ler_matches_evaluate_with_a_committed_check() {
+        let device = crate::engine::session_available();
+        if !device {
+            eprintln!("note: no engine device session; the chunked LER path ran on the host only");
+        }
+        let gates = [
+            ("H", vec![0]),
+            ("CX", vec![0, 1]),
+            ("S", vec![1]),
+            ("CX", vec![1, 2]),
+            ("H", vec![2]),
+            ("CX", vec![2, 0]),
+            ("CX", vec![0, 1]),
+            ("H", vec![1]),
+        ];
+        let circuit = gates
+            .into_iter()
+            .map(|(name, qubits)| (name.to_string(), qubits))
+            .collect();
+        let noise = || vec![NoiseModel::uniform_depolarizing(0.01)];
+        let mut picker = CheckPicker::new(
+            circuit,
+            Some(5),
+            Some(vec![0, 1, 2]),
+            None,
+            None,
+            None,
+            None,
+        );
+        picker.set_evaluation_data(noise(), Metric::gamma(), 3);
+        picker.set_support(picker.get_wires(0), vec![1, 2, 3], Some(0));
+        let (mut picker, _) = picker.find_good_checks().unwrap();
+        assert!(!picker.check_data.0.is_empty());
+        let (nshots, seed) = (20_000, Some(20261013));
+        picker.set_evaluation_data(noise(), Metric::logical_error_rate(nshots, seed), 4);
+
+        let mut checks = Vec::new();
+        for qubit in 0..3 {
+            for support_seed in 0..3 {
+                picker.set_support(picker.get_wires(qubit), vec![1, 2, 3], Some(support_seed));
+                checks.extend(picker.check_decoder.as_ref().unwrap().find_checks());
+            }
+        }
+        let evaluator = picker.check_evaluator.as_ref().unwrap();
+        let mut items: Vec<(SparsePauli, Vec<usize>)> = checks
+            .into_iter()
+            .map(|check| {
+                let vzs = evaluator.compute_vzs(&check);
+                (check, vzs)
+            })
+            .collect();
+        // More than one chunk, and a ragged last one.
+        if items.len().is_multiple_of(CheckEvaluator::LER_CHUNK) {
+            items.pop();
+        }
+        assert!(
+            items.len() > CheckEvaluator::LER_CHUNK,
+            "{} candidates",
+            items.len()
+        );
+
+        let (chunked, on_device) =
+            evaluator.evaluate_ler_in_chunks_counting_device(&items, nshots, seed);
+        assert_eq!(chunked.len(), items.len());
+        if device {
+            assert_eq!(
+                on_device,
+                items.len(),
+                "the device declined some candidates"
+            );
+        }
+        for ((check, vzs), got) in items.iter().zip(&chunked) {
+            let want = evaluator.evaluate(check, vzs);
+            assert_eq!(got.to_bits(), want.to_bits(), "{got} vs {want}");
+        }
+    }
+
+    pub(crate) const CHECKS: &[(&str, fn())] = &[
+        (
+            "device_hook_matches_evaluate_with_a_committed_check",
+            device_hook_matches_evaluate_with_a_committed_check,
+        ),
+        (
+            "chunked_ler_matches_evaluate_with_a_committed_check",
+            chunked_ler_matches_evaluate_with_a_committed_check,
+        ),
+    ];
+}

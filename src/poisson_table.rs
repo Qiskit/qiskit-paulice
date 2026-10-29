@@ -186,6 +186,47 @@ impl PoissonTables {
     pub fn num_tables(&self) -> usize {
         self.tables.len()
     }
+
+    pub fn num_generators(&self) -> usize {
+        self.table_of.len()
+    }
+
+    /// The tables concatenated, so they can be copied to a device at once.
+    pub fn flatten(&self) -> FlatTables {
+        let mut flat = FlatTables {
+            cdf: Vec::with_capacity(self.tables.iter().map(PoissonTable::len).sum()),
+            offset: Vec::with_capacity(self.tables.len()),
+            len: Vec::with_capacity(self.tables.len()),
+            k_lo: Vec::with_capacity(self.tables.len()),
+            table_of: self.table_of.clone(),
+        };
+        for table in &self.tables {
+            flat.offset.push(flat.cdf.len() as u32);
+            flat.len.push(table.cdf.len() as u32);
+            flat.k_lo.push(table.k_lo);
+            flat.cdf.extend_from_slice(&table.cdf);
+        }
+        flat
+    }
+
+    /// The largest count any table can return. A table is a truncated window,
+    /// so no generator can draw more than its window's top count.
+    pub fn max_count(&self) -> u32 {
+        self.tables.iter().map(|t| t.window().1).max().unwrap_or(0)
+    }
+}
+
+/// `PoissonTables` laid out as flat arrays.
+pub struct FlatTables {
+    /// Every table's CDF, concatenated.
+    pub cdf: Vec<f64>,
+    /// Where table `t` starts in `cdf`, its length, and the count its first
+    /// entry stands for.
+    pub offset: Vec<u32>,
+    pub len: Vec<u32>,
+    pub k_lo: Vec<u32>,
+    /// `table_of[g]` is generator `g`'s table.
+    pub table_of: Vec<u32>,
 }
 
 #[cfg(test)]
@@ -414,6 +455,28 @@ mod tests {
                  its own lambda {lambda}"
             );
         }
+    }
+
+    #[test]
+    fn flattened_tables_are_the_tables() {
+        let rates: Vec<f64> = (0..64)
+            .map(|i| if i % 2 == 0 { 0.003 } else { 0.01 })
+            .collect();
+        let tables = PoissonTables::build(&rates, 20_000);
+        let flat = tables.flatten();
+        assert_eq!(flat.table_of.len(), rates.len());
+        assert_eq!(flat.offset.len(), tables.num_tables());
+        for g in 0..rates.len() {
+            let t = flat.table_of[g] as usize;
+            let cdf = &flat.cdf[flat.offset[t] as usize..][..flat.len[t] as usize];
+            let table = tables.for_generator(g);
+            assert_eq!(cdf, table.cdf.as_slice());
+            assert_eq!(flat.k_lo[t], table.window().0);
+        }
+        let top = (0..rates.len())
+            .map(|g| tables.for_generator(g).window().1)
+            .max();
+        assert_eq!(Some(tables.max_count()), top);
     }
 
     #[test]
