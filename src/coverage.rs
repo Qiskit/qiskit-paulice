@@ -206,6 +206,17 @@ impl<'a> Coverage<'a> {
     /// With `seed = None` a fresh base seed is drawn from an OS-seeded
     /// generator on every call, so the result varies from call to call.
     pub fn approximate_psr_ler(&self, nshots: usize, seed: Option<u64>) -> (f64, f64) {
+        let job = self.prepare_psr_ler(nshots, seed);
+        let (counts, nonempty) = crate::ler::score_batch(std::slice::from_ref(&job))
+            .pop()
+            .expect("score_batch returns one result per job");
+        job.finish(counts, nonempty)
+    }
+
+    /// Everything `approximate_psr_ler` does except scoring, so that a round
+    /// of candidates can be prepared in parallel and scored together with
+    /// `ler::score_batch`.
+    pub fn prepare_psr_ler(&self, nshots: usize, seed: Option<u64>) -> crate::ler::LerJob {
         let error_generators = self.get_generator_errors();
         let sample = crate::ler::sample_shots(&error_generators, nshots, seed);
         let tables = crate::ler::LerTables::pack(
@@ -214,15 +225,7 @@ impl<'a> Coverage<'a> {
             &self.logical_cumulants,
             self.circuit.nqbits,
         );
-        let counts = crate::ler::score_shots(&tables, &sample);
-
-        // Shots in which nothing fired carry an identity error, which
-        // post-selection accepts; they are counted here rather than scored.
-        let accepted = counts.accepted + (nshots - sample.nonempty) as u64;
-        (
-            accepted as f64 / nshots as f64,
-            counts.logical as f64 / accepted as f64,
-        )
+        crate::ler::LerJob::new(tables, nshots, sample)
     }
 
     /// The hash-map scorer, kept as the reference the packed scorer's parity

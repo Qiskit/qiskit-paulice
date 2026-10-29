@@ -75,7 +75,7 @@ const WORD: usize = 64;
 /// a batch sized to the exact deficit can only just reach the target. That
 /// equivalence is what `batched_draw_matches_the_rejection_loop_exactly`
 /// pins down, stream position included.
-fn sample_shot_positions(
+pub(crate) fn sample_shot_positions(
     stream: &mut GeneratorStream,
     table: &PoissonTable,
     nshots: usize,
@@ -139,7 +139,13 @@ pub fn sample_shots(generators: &[NoiseGenerator], nshots: usize, seed: Option<u
             sample_shot_positions(&mut stream, tables.for_generator(index), nshots)
         })
         .collect();
+    transpose_to_shots(&fired, nshots)
+}
 
+/// Turns per-generator shot lists into per-shot generator lists: a histogram,
+/// a prefix sum and a scatter. The scatter walks generators in ascending
+/// order, so within a shot the generators come out ascending.
+pub(crate) fn transpose_to_shots(fired: &[Vec<u32>], nshots: usize) -> ShotSample {
     let mut offsets = vec![0u32; nshots + 1];
     for shots in fired.iter() {
         for &shot in shots.iter() {
@@ -267,6 +273,47 @@ impl ShotCounts {
             logical: self.logical + other.logical,
         }
     }
+}
+
+/// One candidate's Monte Carlo work, prepared and not yet scored.
+///
+/// Preparation and scoring are separate so that a round of candidates can be
+/// prepared in parallel and then scored together by `score_batch`.
+pub struct LerJob {
+    pub tables: LerTables,
+    pub nshots: usize,
+    sample: ShotSample,
+}
+
+impl LerJob {
+    pub fn new(tables: LerTables, nshots: usize, sample: ShotSample) -> Self {
+        Self {
+            tables,
+            nshots,
+            sample,
+        }
+    }
+
+    /// Turns the counts into `(post-selection acceptance, logical error rate)`.
+    ///
+    /// Shots in which nothing fired carry an identity error, which
+    /// post-selection accepts; they are counted here rather than scored.
+    pub fn finish(&self, counts: ShotCounts, nonempty: usize) -> (f64, f64) {
+        let accepted = counts.accepted + (self.nshots - nonempty) as u64;
+        (
+            accepted as f64 / self.nshots as f64,
+            counts.logical as f64 / accepted as f64,
+        )
+    }
+}
+
+/// Scores a round of jobs, returning each job's counts and non-empty shot
+/// count in input order. A job's result does not depend on which other jobs
+/// share the round.
+pub fn score_batch(jobs: &[LerJob]) -> Vec<(ShotCounts, usize)> {
+    jobs.par_iter()
+        .map(|job| (score_shots(&job.tables, &job.sample), job.sample.nonempty))
+        .collect()
 }
 
 /// Scores every non-empty shot.
@@ -701,6 +748,64 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A round scored together has to give each candidate exactly what it
+    /// gets scored alone. The candidates differ in width, and the test checks
+    /// that their results differ too, so a batch that returned one answer for
+    /// the whole round, or answers in the wrong order, would fail.
+    #[test]
+    fn a_round_scored_together_matches_one_at_a_time() {
+        use crate::coverage::Coverage;
+        use crate::noise_model::{Readout, UNoiseModel, UniformDepolarizing};
+        use rustiq_core::structures::{CliffordCircuit, CliffordGate};
+
+        let models = vec![
+            UNoiseModel::UniformDepolarizing(UniformDepolarizing::new(0.01)),
+            UNoiseModel::Readout(Readout::new(0.02)),
+        ];
+        let nshots = 4096;
+        let seed = Some(20260904);
+        let circuits: Vec<CliffordCircuit> = [4usize, 6, 9, 5]
+            .into_iter()
+            .map(|nqbits| {
+                let mut circuit = CliffordCircuit::new(nqbits);
+                for q in 0..nqbits - 1 {
+                    circuit.gates.push(CliffordGate::CZ(q, q + 1));
+                    circuit.gates.push(CliffordGate::H(q));
+                }
+                circuit
+            })
+            .collect();
+
+        let mut alone = Vec::new();
+        let mut jobs = Vec::new();
+        for circuit in &circuits {
+            let measured: Vec<usize> = (0..circuit.nqbits).collect();
+            let mut coverage = Coverage::new(circuit, &models);
+            coverage.set_check_cumulants(&[0], &[vec![]]);
+            coverage.set_logical_cumulants(&[], &measured);
+            alone.push(coverage.approximate_psr_ler(nshots, seed));
+            jobs.push(coverage.prepare_psr_ler(nshots, seed));
+        }
+        let together: Vec<(f64, f64)> = score_batch(&jobs)
+            .into_iter()
+            .zip(&jobs)
+            .map(|((counts, nonempty), job)| job.finish(counts, nonempty))
+            .collect();
+
+        assert_eq!(together.len(), alone.len());
+        for (i, (batched, single)) in together.iter().zip(&alone).enumerate() {
+            assert_eq!(
+                (batched.0.to_bits(), batched.1.to_bits()),
+                (single.0.to_bits(), single.1.to_bits()),
+                "candidate {i}: {batched:?} batched vs {single:?} alone"
+            );
+        }
+        assert!(
+            alone.iter().any(|r| r.1.to_bits() != alone[0].1.to_bits()),
+            "every candidate scored the same, so the test cannot tell the results apart"
+        );
     }
 
     #[test]
