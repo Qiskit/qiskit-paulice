@@ -29,6 +29,10 @@
 // each candidate's cumulants, counts the generators that contribute to gamma,
 // and returns one score per candidate. The LER entry points score one
 // candidate's Monte Carlo sample.
+//
+// `tests/common/mod.rs` is a CPU engine written against this header, which
+// `cargo test` holds to the conformance checks. It is the plainest statement of
+// what each entry computes.
 
 #ifndef PAULICE_ENGINE_H
 #define PAULICE_ENGINE_H
