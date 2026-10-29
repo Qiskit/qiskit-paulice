@@ -14,7 +14,10 @@ use pyo3::prelude::*;
 
 #[derive(Debug, Clone)]
 pub enum Metric {
-    LogicalErrorRate(usize),
+    /// Monte Carlo logical error rate: `(nshots, seed)`. The same seed is
+    /// reused for every evaluation, so the estimate reproduces exactly; `None`
+    /// draws a fresh seed per evaluation.
+    LogicalErrorRate(usize, Option<u64>),
     Gamma,
     BalancedGamma,
 }
@@ -32,9 +35,10 @@ pub struct PyMetric {
 #[pymethods]
 impl PyMetric {
     #[staticmethod]
-    pub fn logical_error_rate(nshots: usize) -> Self {
+    #[pyo3(signature = (nshots, seed=None))]
+    pub fn logical_error_rate(nshots: usize, seed: Option<u64>) -> Self {
         Self {
-            _data: Metric::LogicalErrorRate(nshots),
+            _data: Metric::LogicalErrorRate(nshots, seed),
         }
     }
 
