@@ -1,7 +1,0 @@
----
-other:
-  - |
-    Added the guide *Combining error detection with error cancellation*, which combines the
-    post-selection of spacetime Pauli checks with probabilistic error cancellation (PEC) of the noise
-    the checks cannot detect, using ``qiskit-mitigation``'s post-selected noise mask and estimator,
-    and measures the first-order truncation bias this combination leaves.
