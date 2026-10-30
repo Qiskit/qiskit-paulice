@@ -473,6 +473,16 @@ class TestAddPauliChecksPermutations(unittest.TestCase):
         self.assertEqual([v.check_support for v in r1], [v.check_support for v in r2])
         self.assertEqual([v.cost for v in r1], [v.cost for v in r2])
 
+    def test_seed_reproducibility_for_ler_windowed(self):
+        """``cost="LER"`` + ``method="windowed"`` is fully deterministic with a seed."""
+        qc = _clifford()
+        kwargs = dict(cost="LER", cost_nshots=200, method="windowed", seed=42)
+        r1 = add_pauli_checks(qc, [0, 1], _DEFAULT_NOISE, **kwargs)
+        r2 = add_pauli_checks(qc, [0, 1], _DEFAULT_NOISE, **kwargs)
+        self.assertEqual([v.check_qubits for v in r1], [v.check_qubits for v in r2])
+        self.assertEqual([v.check_support for v in r1], [v.check_support for v in r2])
+        self.assertEqual([v.cost for v in r1], [v.cost for v in r2])
+
     def test_non_isa_silently_ignores_ancilla_qubits(self):
         """In non-ISA mode ``ancilla_qubits`` has no effect (documented behavior)."""
         qc = _clifford()

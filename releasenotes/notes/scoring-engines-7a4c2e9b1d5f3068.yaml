@@ -1,0 +1,10 @@
+---
+features:
+  - |
+    Candidate checks for ``cost="gamma"`` and ``cost="LER"`` can now be scored by a
+    separately installed acceleration engine, enabled through Coheriq with
+    ``PAULICE_ENGINE=<name>`` or ``coheriq.enable_engine("qiskit_paulice", "<name>")``.
+    An engine returns the same costs as the CPU, bit for bit, and anything it cannot
+    score that way runs on the CPU. The new :mod:`qiskit_paulice.acceleration` module
+    checks an engine against the CPU. Coheriq is not yet on PyPI; the installation
+    guide shows how to install it.

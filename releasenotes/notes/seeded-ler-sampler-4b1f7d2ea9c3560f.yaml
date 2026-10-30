@@ -1,0 +1,14 @@
+---
+features:
+  - |
+    :func:`~qiskit_paulice.checks.add_pauli_checks` with ``cost="LER"`` now draws its Monte Carlo
+    sample from the ``seed`` argument, so ``cost="LER"`` combined with ``method="windowed"``
+    and a ``seed`` is fully deterministic, which previously only held for ``cost="gamma"``.
+    The sample is keyed on the seed and on each error generator's index, so it does not
+    depend on how the work is scheduled across threads and a seeded run reproduces exactly.
+upgrade:
+  - |
+    The ``cost="LER"`` sampler now uses a counter-based Philox generator and a tabulated
+    Poisson distribution. It samples the same distribution as before, but a given run draws
+    different shots, so ``cost="LER"`` results are not identical to those of earlier
+    releases. Leaving ``seed`` as ``None`` still draws a fresh sample on every evaluation.

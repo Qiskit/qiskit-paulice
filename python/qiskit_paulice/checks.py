@@ -32,6 +32,7 @@ from ._internal import pick_checks as _pick_checks
 from ._internal.conversion import convert_noise_model as _convert_noise_model
 from ._internal.conversion import convert_stabilizers as _convert_stabilizers
 from ._internal.utils import validate_terminal_measurements as _validate_terminal_measurements
+from .acceleration import install_scoring_engine as _install_scoring_engine
 from .checked_circuit import CheckedCircuit
 from .noise_models import NoiseModel
 
@@ -125,9 +126,11 @@ def add_pauli_checks(
         check_qreg_name: Name of the quantum register holding the check ancillas in the output circuits
             (default: "checks_q"). Ignored in ISA mode.
         seed: Random seed for controlling randomness during the search for good checks. While this seed controls
-            some randomness in the algorithm, some non-determinism still exists when using ``LER`` cost function,
-            or either variety of genetic check picking method. The combination of ``cost="gamma"`` and
-            ``method="windowed"`` is fully deterministic if ``seed`` is not ``None``.
+            some randomness in the algorithm, some non-determinism still exists when using either variety of
+            genetic check picking method. With ``method="windowed"`` and a ``seed`` that is not ``None``, both
+            ``cost="gamma"`` and ``cost="LER"`` are fully deterministic: the seed also fixes the Monte Carlo
+            sample drawn by ``"LER"``, independently of the number of threads. Leaving ``seed`` as ``None``
+            draws a fresh ``"LER"`` sample on every evaluation.
         stabilizers: Stabilizers of the state ``circuit`` prepares to find checks for, or ``None``
             to find checks for the circuit's terminal measurements. ``"all"`` protects the whole
             state. Otherwise a sequence of :class:`~qiskit.quantum_info.Pauli` or labels on the
@@ -213,10 +216,11 @@ def add_pauli_checks(
     if cost.lower() == "gamma":
         metric = _Metric.gamma()
     elif cost.lower() == "ler":
-        metric = _Metric.logical_error_rate(cost_nshots)
+        metric = _Metric.logical_error_rate(cost_nshots, seed)
     else:
         raise ValueError(f"Invalid cost value: {cost}")
 
+    _install_scoring_engine()
     _validate_terminal_measurements(circuit)
     has_measurements = any(inst.operation.name == "measure" for inst in circuit.data)
     if stabilizers is None and not has_measurements:
