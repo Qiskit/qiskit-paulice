@@ -320,6 +320,64 @@ mod gamma_conformance {
         "device_matches_cpu_bit_for_bit",
         device_matches_cpu_bit_for_bit,
     )];
+
+    /// Pins the host's gamma for a fixed batch, so a change to the host walk
+    /// or the generator enumeration shows up here even with no engine to
+    /// compare against. The tolerance only absorbs `exp`, whose last bit may
+    /// differ between platform maths libraries.
+    #[cfg(test)]
+    mod golden {
+        use super::*;
+
+        #[test]
+        fn host_gamma_matches_its_golden_values() {
+            let models = models();
+            for (nqubits, ngates, golden) in [
+                (
+                    8usize,
+                    40usize,
+                    [1.12903142202641, 1.3057315417834063, 1.2107729565967393],
+                ),
+                (
+                    64,
+                    200,
+                    [6.212243919666082, 14.094759142990492, 6.119021484303299],
+                ),
+            ] {
+                let measured: Vec<usize> = (0..nqubits).collect();
+                let ctx = GammaContext {
+                    noise_models: &models,
+                    stabilizers: &[],
+                    measured_qubits: &measured,
+                };
+                let circuits: Vec<CliffordCircuit> = (0..3)
+                    .map(|s| sample_circuit(nqubits, ngates, 0x601D_0000 + s))
+                    .collect();
+                let check_qubits = [0usize, nqubits / 2];
+                let virtual_zs: Vec<Vec<usize>> = vec![Vec::new(), vec![1]];
+                let candidates: Vec<GammaCandidate> = circuits
+                    .iter()
+                    .map(|circuit| GammaCandidate {
+                        circuit,
+                        check_qubits: &check_qubits,
+                        virtual_zs: &virtual_zs,
+                    })
+                    .collect();
+                for (i, (got, want)) in host_gamma_scores(&ctx, &candidates)
+                    .into_iter()
+                    .zip(golden)
+                    .enumerate()
+                {
+                    assert!(
+                        ((got - want) / want).abs() < 1e-12,
+                        "{nqubits} qubits, candidate {i}: gamma {got:?}, golden {want:?}. If the \
+                         change is intended, update the golden value, and bump \
+                         PAULICE_ENGINE_ABI_VERSION if engines must compute it differently."
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// LER conformance, stage by stage and end to end. The device counts shots in
@@ -800,6 +858,34 @@ mod ler_conformance {
             an_unseeded_job_draws_from_its_resolved_seed,
         ),
     ];
+
+    /// Pins the host's LER counts for fixed seeded jobs. They are integers
+    /// from integer and IEEE-754 work, so they are compared exactly.
+    #[cfg(test)]
+    mod golden {
+        use super::*;
+
+        #[test]
+        fn host_ler_matches_its_golden_values() {
+            let models = realistic_models();
+            for (nqbits, check, nshots, golden) in [
+                (12usize, 0usize, 8192usize, (1174u64, 349u64, 1189usize)),
+                (32, 5, 20_000, (6909, 2128, 7027)),
+                (64, 23, 200_000, (115_866, 39_977, 117_108)),
+            ] {
+                let circuit = chain(nqbits);
+                let coverage = chain_coverage(&circuit, &models, check);
+                let (counts, nonempty) = host_counts(&coverage, nshots, 0x601D_5EED);
+                assert_eq!(
+                    (counts.accepted, counts.logical, nonempty),
+                    golden,
+                    "{nqbits} qubits, {nshots} shots: (accepted, logical, nonempty). If the \
+                     change is intended, update the golden value, and bump \
+                     PAULICE_ENGINE_ABI_VERSION if engines must compute it differently."
+                );
+            }
+        }
+    }
 }
 
 /// Engine dispatch. Builds the flat batch description the engine consumes,
