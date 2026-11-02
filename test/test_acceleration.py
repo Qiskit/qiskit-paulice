@@ -17,12 +17,19 @@ from __future__ import annotations
 import os
 import unittest
 
+import coheriq
+import qiskit_paulice
 from qiskit_paulice import acceleration
 from qiskit_paulice._internal._internal_r import register_scoring_engine
 
 
 class TestScoringEngineSeam(unittest.TestCase):
     """Test registration and conformance of a scoring engine."""
+
+    def test_importing_the_package_registers_its_domain(self):
+        """Coheriq finds the domain from the package module."""
+        self.assertIn("qiskit_paulice", coheriq.known_domains())
+        self.assertIn("reference", coheriq.available_engines(qiskit_paulice))
 
     def test_rejects_an_object_that_is_not_an_engine_capsule(self):
         """Only a capsule named ``qiskit_paulice.engine`` is accepted."""

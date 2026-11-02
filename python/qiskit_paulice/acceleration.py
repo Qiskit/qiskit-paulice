@@ -16,7 +16,7 @@ Candidate checks are scored on the host unless a scoring engine is enabled. An
 engine is a separately installed package, selected through `Coheriq
 <https://github.com/Qiskit/coheriq>`_ before the first call to
 :func:`~qiskit_paulice.checks.add_pauli_checks`, either with
-``coheriq.enable_engine("qiskit_paulice", "<engine>")`` or by setting
+``coheriq.enable_engine(qiskit_paulice, "<engine>")`` or by setting
 ``PAULICE_ENGINE=<engine>``.
 
 The engine overrides one Coheriq candidate, :func:`scoring_engine`, to return
@@ -29,18 +29,13 @@ the host.
 
 from __future__ import annotations
 
-import os
 import threading
-import warnings
+
+from coheriq import AccelerationDomain
 
 from ._internal._internal_r import register_scoring_engine as _register_scoring_engine
 from ._internal._internal_r import run_engine_conformance as _run_engine_conformance
 from ._internal._internal_r import scoring_engine_name as _scoring_engine_name
-
-try:
-    from coheriq import AccelerationDomain
-except ImportError:  # Without Coheriq no engine can be enabled.
-    AccelerationDomain = None
 
 
 def _host_scoring_engine():
@@ -53,12 +48,9 @@ def _host_scoring_engine():
     return None
 
 
-if AccelerationDomain is not None:
-    _domain = AccelerationDomain("qiskit_paulice", env_prefix="PAULICE")
-    scoring_engine = _domain.acceleration_candidate(name="scoring_engine")(_host_scoring_engine)
-    _domain.materialize()
-else:
-    scoring_engine = _host_scoring_engine
+_domain = AccelerationDomain("qiskit_paulice", env_prefix="PAULICE")
+scoring_engine = _domain.acceleration_candidate(name="scoring_engine")(_host_scoring_engine)
+_domain.materialize()
 
 _install_lock = threading.Lock()
 _installed = False
@@ -76,12 +68,6 @@ def install_scoring_engine() -> None:
     with _install_lock:
         if _installed:
             return
-        if AccelerationDomain is None and os.environ.get("PAULICE_ENGINE"):
-            warnings.warn(
-                "PAULICE_ENGINE is set but Coheriq is not installed, so candidate checks "
-                "are scored on the host. Install it from https://github.com/Qiskit/coheriq.",
-                stacklevel=3,
-            )
         table = scoring_engine()
         if table is not None:
             _register_scoring_engine(table)

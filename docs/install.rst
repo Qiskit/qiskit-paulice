@@ -68,13 +68,11 @@ Optional: score candidate checks with an acceleration engine
 
 Candidate checks for ``cost="gamma"`` and ``cost="LER"`` can be scored by a separately
 installed acceleration engine instead of on the CPU. Engines are discovered and enabled
-through `Coheriq <https://github.com/Qiskit/coheriq>`_, so install it alongside the
-engine package. Coheriq is an early prototype and is not yet released on PyPI, so it is
-installed from its repository:
+through `Coheriq <https://github.com/Qiskit/coheriq>`_, which is installed with
+qiskit-paulice, so only the engine package needs installing:
 
 .. code:: sh
 
-    pip install "coheriq @ git+https://github.com/Qiskit/coheriq.git"
     pip install <engine-package>
 
 Then select the engine by name before the first call to
@@ -84,9 +82,9 @@ before starting Python or in code:
 .. code:: python
 
     import coheriq
-    import qiskit_paulice  # registers the "qiskit_paulice" domain
+    import qiskit_paulice
 
-    coheriq.enable_engine("qiskit_paulice", "<name>")
+    coheriq.enable_engine(qiskit_paulice, "<name>")
 
 The choice is final for the rest of the process. ``PAULICE_ENGINE_DEVICE`` sets the
 index of the device the engine opens (default ``0``; a value that is not an integer also
