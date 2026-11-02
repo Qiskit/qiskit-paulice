@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Sequence
+from functools import partial
 from typing import Literal
 
 import numpy as np
@@ -143,6 +144,15 @@ def add_pauli_checks(
         A list of :class:`~qiskit_paulice.checked_circuit.CheckedCircuit` instances -- instances containing the bare circuit with
         no checks and one for each added check. The final element in the output contains the :class:`~qiskit_paulice.checked_circuit.CheckedCircuit`
         with checks on every target qubit, assuming a valid set of checks could be found.
+
+        Each element's :attr:`~qiskit_paulice.checked_circuit.CheckedCircuit.circuit` is
+        assembled the first time it is read, not before this function returns. Check
+        metadata -- :attr:`~qiskit_paulice.checked_circuit.CheckedCircuit.cost` and the qubit
+        tuples -- is always available, so reading only ``[c.cost for c in result]`` to watch
+        the cost converge assembles nothing, and reading only ``result[-1].circuit``
+        assembles one circuit instead of all of them. If the requested gate set cannot
+        express the inserted checks, the resulting warning is raised on that first read
+        rather than here.
 
     Raises:
         ValueError: ``circuit`` has no entangling gate, so there is nothing for a check to
@@ -401,15 +411,21 @@ def add_pauli_checks(
         # payload bits to XOR in.
         result.virtual_zs = [[q] for q in result.check_qubits]
 
+    # The picker's raw variants, in the package's internal Clifford basis and on
+    # the picker's own qubit layout. Reassembling a variant is expensive, so
+    # `_assemble` runs per variant, on demand.
+    variants = result.circuits
+
     if is_isa:
         # Lift each picker variant onto the input ISA's physical-qubit layout.
         # Each committed check keeps the ancilla the caller paired with its
         # target, reordered into commit order.
         anc_list = list(ancilla_qubits)  # type: ignore[arg-type]
         committed_anc = [anc_list[picker_targets.index(t)] for t in committed]
-        result.circuits = [
-            _lift_to_isa_circuit(
-                variant=v,
+
+        def _rebuild(k: int) -> QuantumCircuit:
+            return _lift_to_isa_circuit(
+                variant=variants[k],
                 qregs=qregs,
                 cregs=cregs,
                 measurement_info=measurement_info,
@@ -419,8 +435,7 @@ def add_pauli_checks(
                 ancilla_qubits=committed_anc,
                 check_creg_name=check_creg_name,
             )
-            for k, v in enumerate(result.circuits)
-        ]
+
         # `virtual_zs` and `check_qubits` reference virtual indices into the
         # small payload-only circuit. Remap them to the physical indices used by
         # the lifted output so post-selection reads the right measurement bits.
@@ -431,23 +446,30 @@ def add_pauli_checks(
         result.check_qubits = list(committed_anc)
         target_qubits_out = [payload_phys[t] for t in committed]
     else:
-        # Restore original measurements and add check measurements (non-ISA path).
-        _restore_measurements_and_cregs(
-            result.circuits,
-            measurement_info,
-            cregs,
-            num_original_qubits=virtual_circuit.num_qubits,
-            qregs=qregs,
-            check_qubits=result.check_qubits,
-            check_creg_name=check_creg_name,
-            check_qreg_name=check_qreg_name,
-        )
+        all_check_qubits = list(result.check_qubits)
+
+        def _rebuild(k: int) -> QuantumCircuit:
+            # Restore original measurements and add check measurements (non-ISA path).
+            return _restore_variant(
+                variants[k],
+                num_active_checks=k,
+                measurement_info=measurement_info,
+                cregs=cregs,
+                num_original_qubits=n_payload_v,
+                qregs=qregs,
+                check_qubits=all_check_qubits,
+                check_creg_name=check_creg_name,
+                check_qreg_name=check_qreg_name,
+            )
+
         target_qubits_out = list(committed)
 
-    # Re-express every output in the input circuit's basis. The picker emits its
-    # internal Clifford basis ({h, cx, cz, s, sx, sdg, sxdg}); translate back so
-    # the returned circuits match the gate set the caller transpiled to.
-    result.circuits = [_translate_to_basis(c, output_basis) for c in result.circuits]
+    def _assemble(k: int) -> QuantumCircuit:
+        # Re-express the output in the input circuit's basis. The picker emits
+        # its internal Clifford basis ({h, cx, cz, s, sx, sdg, sxdg}); translate
+        # back so the returned circuit matches the gate set the caller
+        # transpiled to.
+        return _translate_to_basis(_rebuild(k), output_basis)
 
     # Build the public per-variant list. `result.costs[k]` is the picker metric
     # after committing the first `k` checks.
@@ -456,15 +478,15 @@ def add_pauli_checks(
     check_qubits_tuple = tuple(result.check_qubits)
     check_support_tuple = tuple(tuple(s) for s in result.virtual_zs)
     return [
-        CheckedCircuit(
-            circuit=circ,
+        CheckedCircuit._deferred(
+            partial(_assemble, k),
             target_qubits=target_qubits_tuple[:k],
             check_qubits=check_qubits_tuple[:k],
             check_support=check_support_tuple[:k],
             cost=costs[k],
             cost_metric=cost,
         )
-        for k, circ in enumerate(result.circuits)
+        for k in range(len(variants))
     ]
 
 
@@ -679,8 +701,9 @@ def _lift_to_isa_circuit(
     return new_circuit
 
 
-def _restore_measurements_and_cregs(
-    circuits,
+def _restore_variant(
+    variant,
+    num_active_checks,
     measurement_info,
     cregs,
     num_original_qubits,
@@ -689,10 +712,11 @@ def _restore_measurements_and_cregs(
     check_creg_name="checks_c",
     check_qreg_name="checks_q",
 ):
-    """Restore measurements and classical registers to circuits.
+    """Rebuild one picker variant with its measurements and classical registers.
 
     Args:
-        circuits: List of circuits to restore metadata to. circuits[i] has i active checks.
+        variant: Picker output circuit with all ancillas allocated.
+        num_active_checks: Number of check ancillas this variant keeps.
         measurement_info: List of (qubit_idx, clbit_idx, creg_name) tuples
         cregs: List of ClassicalRegister objects to restore
         num_original_qubits: Number of qubits in the original circuit (before adding checks)
@@ -702,30 +726,32 @@ def _restore_measurements_and_cregs(
         check_qubits: List of all ancilla qubit indices for Pauli checks (optional)
         check_creg_name: Name of the classical register for check measurements
         check_qreg_name: Name of the quantum register holding active check ancillas
+
+    Returns:
+        The rebuilt circuit, in the picker's internal basis.
     """
-    for circ_idx, circ in enumerate(circuits):
-        num_active_checks = circ_idx
-        circ = _remove_inactive_qubits(
-            circ,
-            num_original_qubits,
-            num_active_checks,
-            qregs=qregs,
-            check_qreg_name=check_qreg_name,
-        )
-        circuits[circ_idx] = circ
+    circ = _remove_inactive_qubits(
+        variant,
+        num_original_qubits,
+        num_active_checks,
+        qregs=qregs,
+        check_qreg_name=check_qreg_name,
+    )
 
-        for creg in cregs:
-            circ.add_register(creg)
+    for creg in cregs:
+        circ.add_register(creg)
 
-        for qubit_idx, clbit_idx, creg_name in measurement_info:
-            creg = next(reg for reg in circ.cregs if reg.name == creg_name)
-            circ.measure(qubit_idx, creg[clbit_idx])
+    for qubit_idx, clbit_idx, creg_name in measurement_info:
+        creg = next(reg for reg in circ.cregs if reg.name == creg_name)
+        circ.measure(qubit_idx, creg[clbit_idx])
 
-        # Active check ancillas occupy the dedicated `check_qreg`, which lives
-        # at the tail of the qubit list (indices [num_original_qubits, ...)).
-        if check_qubits and num_active_checks > 0:
-            check_creg = ClassicalRegister(num_active_checks, name=check_creg_name)
-            circ.add_register(check_creg)
-            for idx in range(num_active_checks):
-                qubit_idx = num_original_qubits + idx
-                circ.measure(qubit_idx, check_creg[idx])
+    # Active check ancillas occupy the dedicated `check_qreg`, which lives
+    # at the tail of the qubit list (indices [num_original_qubits, ...)).
+    if check_qubits and num_active_checks > 0:
+        check_creg = ClassicalRegister(num_active_checks, name=check_creg_name)
+        circ.add_register(check_creg)
+        for idx in range(num_active_checks):
+            qubit_idx = num_original_qubits + idx
+            circ.measure(qubit_idx, check_creg[idx])
+
+    return circ
