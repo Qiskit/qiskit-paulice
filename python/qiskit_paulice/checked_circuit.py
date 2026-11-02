@@ -208,15 +208,10 @@ class CheckedCircuit:
     def __getstate__(self) -> dict[str, Any]:
         """Return the picklable state, assembling a deferred ``circuit`` first."""
         # A pending `_build_circuit` closes over the picker's output and does not pickle.
-        circuit = self.circuit
-        state = {k: v for k, v in self.__dict__.items() if k != "_build_circuit"}
-        state["circuit"] = circuit
-        return state
-
-    def __setstate__(self, state: dict[str, Any]) -> None:
-        """Restore from :meth:`__getstate__`, which the frozen dataclass forbids doing directly."""
-        for key, value in state.items():
-            object.__setattr__(self, key, value)
+        # Reading ``circuit`` builds it and drops the builder. The default restore writes
+        # this dict straight into the new instance, which a frozen dataclass allows.
+        _ = self.circuit
+        return dict(self.__dict__)
 
     @cached_property
     def uncovered_paulis(self) -> tuple[UncoveredPauli, ...]:
