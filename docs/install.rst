@@ -101,3 +101,26 @@ generators, if its packed scoring row exceeds 1024 words, or if the engine decli
 :func:`qiskit_paulice.acceleration.run_engine_conformance` checks the enabled engine
 against the CPU, and :func:`qiskit_paulice.acceleration.scoring_engine_name` reports
 which engine is installed.
+
+What is reproducible
+""""""""""""""""""""
+
+Costs are held to two different bars.
+
+- **An engine against the CPU, on the same machine: bit for bit.** For
+  ``cost="gamma"`` the engine returns each candidate's summed fault rates, added in the
+  same order as on the CPU, and the CPU applies ``exp`` to them, so the device's maths
+  library never enters a score. For ``cost="LER"`` the engine draws from the same random
+  streams and Poisson tables as the CPU and counts shots as integers.
+  :func:`~qiskit_paulice.acceleration.run_engine_conformance` checks both.
+- **The CPU across platforms: close, but not always bit for bit.** The last bit of a
+  ``cost="gamma"`` score comes from the platform's ``exp``, so it can differ between
+  operating systems or after an update of the maths library. The test suite pins these
+  scores to a relative tolerance of ``1e-12``. ``cost="LER"`` counts are pinned exactly,
+  on Linux, macOS and Windows. The Poisson tables are built with ``exp`` too, so another
+  maths library could in principle move a single draw, though a last-bit difference
+  almost never does.
+
+A change to how qiskit-paulice computes a cost shows up in those pinned values. If
+engines have to follow it, the engine ABI version is bumped, and an engine built for the
+old version is refused.
