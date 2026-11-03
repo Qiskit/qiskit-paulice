@@ -37,7 +37,7 @@ value-based workflows.
 
 ### Documentation
 
-[Documentation](https://quantum.cloud.ibm.com/docs/addons/qiskit-paulice) for this package is available on the IBM Quantum Platform.
+[Documentation](https://quantum.cloud.ibm.com/docs/addons/qiskit-addon-paulice) for this package is available on the IBM Quantum Platform.
 
 ----------------------------------------------------------------------------------------------------
 
