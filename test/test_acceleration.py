@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from unittest import mock
 
 import coheriq
 import qiskit_paulice
@@ -30,6 +31,19 @@ class TestScoringEngineSeam(unittest.TestCase):
         """Coheriq finds the domain from the package module."""
         self.assertIn("qiskit_paulice", coheriq.known_domains())
         self.assertIn("reference", coheriq.available_engines(qiskit_paulice))
+
+    def test_installs_the_enabled_engine_table_once(self):
+        """The table the enabled engine returns is registered on the first install only."""
+        table = object()
+        with (
+            mock.patch.object(acceleration, "_installed", False),
+            mock.patch.object(acceleration, "scoring_engine", return_value=table) as engine,
+            mock.patch.object(acceleration, "_register_scoring_engine") as register,
+        ):
+            acceleration.install_scoring_engine()
+            acceleration.install_scoring_engine()
+        engine.assert_called_once_with()
+        register.assert_called_once_with(table)
 
     def test_rejects_an_object_that_is_not_an_engine_capsule(self):
         """Only a capsule named ``qiskit_paulice.engine`` is accepted."""

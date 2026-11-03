@@ -63,8 +63,6 @@ def install_scoring_engine() -> None:
     use of the Coheriq domain, so the engine choice is final afterwards.
     """
     global _installed  # pylint: disable=global-statement
-    if _installed:
-        return
     with _install_lock:
         if _installed:
             return
