@@ -284,9 +284,11 @@ impl<'a> Coverage<'a> {
 
 /// The post-selection rate and the logical error rate among accepted shots.
 ///
-/// When post-selection rejects every shot the rate is undefined. A check set
-/// that rejects every shot is useless, so it ranks last at 1 rather than NaN,
-/// which would compare false against every other candidate.
+/// When post-selection accepts no sampled shot the rate is undefined: the
+/// sample held no shot without a detected fault, usually because it was too
+/// small for the noise level. It ranks last at 1, so a candidate without an
+/// estimate is never preferred over one with an estimate; NaN would compare
+/// false against every other candidate.
 fn psr_and_ler(accepted: i32, accepted_logical: i32, nshots: usize) -> (f64, f64) {
     if accepted == 0 {
         return (0.0, 1.0);
