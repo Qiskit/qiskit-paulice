@@ -2,10 +2,12 @@
 name = "_internal-r"
 version = "0.1.0"
 edition = "2024"
+# Engines are separate packages, built from this checkout.
+exclude = ["engines/"]
 
 [lib]
 name = "_internal_r"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rustiq-core = "0.0.9"

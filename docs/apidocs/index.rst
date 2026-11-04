@@ -18,3 +18,4 @@
    qiskit_paulice.noise_models
    qiskit_paulice.layout
    qiskit_paulice.wire
+   qiskit_paulice.acceleration

@@ -29,7 +29,7 @@ use rustiq_core::structures::CliffordCircuit;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Mutex;
 
-fn proba_from_rate(rate: f64) -> f64 {
+pub(crate) fn proba_from_rate(rate: f64) -> f64 {
     1. - (1. + (-2. * rate).exp()) / 2.
 }
 
@@ -64,7 +64,7 @@ impl<'a> Coverage<'a> {
         &self.logical_cumulants
     }
 
-    fn get_generator_errors(&self) -> Vec<NoiseGenerator> {
+    pub(crate) fn get_generator_errors(&self) -> Vec<NoiseGenerator> {
         build_noise_generators(self.circuit, self.noise_models)
     }
     /// Computes & stores the backcumulants of a collection of checks specified
@@ -196,88 +196,89 @@ impl<'a> Coverage<'a> {
             .gamma_score(&self.post_selected_cumulants, &self.logical_cumulants)
     }
 
-    pub fn approximate_psr_ler(&self, nshots: usize) -> (f64, f64) {
+    /// Monte Carlo estimate of `(post-selection acceptance, logical error rate)`.
+    ///
+    /// With `seed = Some(s)` the estimate is reproducible: identical across
+    /// repeated calls and across thread counts. The sample is keyed per
+    /// generator index (see `ler::sample_shots`), so it does not depend on
+    /// scheduling.
+    ///
+    /// With `seed = None` a fresh base seed is drawn from an OS-seeded
+    /// generator on every call, so the result varies from call to call.
+    pub fn approximate_psr_ler(&self, nshots: usize, seed: Option<u64>) -> (f64, f64) {
+        let job = self.prepare_psr_ler(nshots, seed);
+        let (counts, nonempty) = crate::ler::score_batch(std::slice::from_ref(&job))
+            .pop()
+            .expect("score_batch returns one result per job");
+        job.finish(counts, nonempty)
+    }
+
+    /// Everything `approximate_psr_ler` does except scoring, so that a round
+    /// of candidates can be prepared in parallel and scored together with
+    /// `ler::score_batch`.
+    pub fn prepare_psr_ler(&self, nshots: usize, seed: Option<u64>) -> crate::ler::LerJob {
         let error_generators = self.get_generator_errors();
+        crate::ler::LerJob::prepare(
+            self.pack_ler(&error_generators),
+            &error_generators,
+            nshots,
+            seed,
+        )
+    }
 
-        let reverse_bins: Vec<_> = (0..nshots).map(|_| Mutex::new(Vec::new())).collect();
-        error_generators
-            .clone()
-            .into_par_iter()
-            .enumerate()
-            .for_each(|(index, (_, e))| {
-                let lambda = (nshots as f64) * proba_from_rate(e);
-                let trng = &mut ThreadRng::default();
-                let poisson = Poisson::new(lambda).unwrap();
-                let num_successes = poisson.sample(trng) as usize;
-                let mut pos = BTreeSet::new();
-                while pos.len() < num_successes {
-                    pos.insert(trng.random_range(0..nshots));
-                }
-                for elem in pos.into_iter() {
-                    reverse_bins[elem].lock().unwrap().push(index);
-                }
-            });
-        let reverse_bins_buckets: Vec<Mutex<Vec<Vec<usize>>>> = (0..rayon::current_num_threads())
-            .map(|_| Mutex::new(Vec::new()))
-            .collect();
-        reverse_bins.into_par_iter().for_each(|b| {
-            if !b.lock().unwrap().is_empty() {
-                reverse_bins_buckets[rayon::current_thread_index().unwrap()]
-                    .lock()
-                    .unwrap()
-                    .push(b.lock().unwrap().clone());
+    /// `prepare_psr_ler`, leaving the draw to the device when it would take
+    /// the job.
+    pub fn prepare_psr_ler_deferred(&self, nshots: usize, seed: Option<u64>) -> crate::ler::LerJob {
+        let error_generators = self.get_generator_errors();
+        crate::ler::LerJob::prepare_deferred(
+            self.pack_ler(&error_generators),
+            &error_generators,
+            nshots,
+            seed,
+        )
+    }
+
+    fn pack_ler(&self, error_generators: &[NoiseGenerator]) -> crate::ler::LerTables {
+        crate::ler::LerTables::pack(
+            error_generators,
+            &self.post_selected_cumulants,
+            &self.logical_cumulants,
+            self.circuit.nqbits,
+        )
+    }
+
+    /// The hash-map scorer, kept as the reference the packed scorer's parity
+    /// tests check against.
+    #[cfg(test)]
+    pub fn approximate_psr_ler_reference(&self, nshots: usize, seed: Option<u64>) -> (f64, f64) {
+        let error_generators = self.get_generator_errors();
+        let sample = crate::ler::sample_shots(&error_generators, nshots, seed);
+
+        let mut accepted_errors: i64 = 0;
+        let mut accepted_logical_errors: i64 = 0;
+        for shot in 0..nshots {
+            let lo = sample.offsets[shot] as usize;
+            let hi = sample.offsets[shot + 1] as usize;
+            if lo == hi {
+                continue;
             }
-        });
-        let accepted_errors: Vec<_> = (0..rayon::current_num_threads())
-            .map(|_| Mutex::new(0))
-            .collect();
-        let accepted_logical_errors: Vec<_> = (0..rayon::current_num_threads())
-            .map(|_| Mutex::new(0))
-            .collect();
-
-        let cumulants = self.logical_cumulants.clone();
-        let measured_cumulants = self.post_selected_cumulants.clone();
-
-        let relevant_indices_len = reverse_bins_buckets
-            .iter()
-            .map(|b| b.lock().unwrap().len())
-            .sum::<usize>();
-        reverse_bins_buckets.into_par_iter().for_each(|bins| {
-            let mut loc_a_e = 0;
-            let mut loc_a_l_e = 0;
-            for bin in bins.lock().unwrap().iter() {
-                let mut error = SparsePauli::new();
-                for index in bin {
-                    error.mult_inplace(&error_generators[*index].0);
-                }
-                if error.paulis.is_empty() {
-                    continue;
-                }
-                if measured_cumulants.covered_parity_any(&error) {
-                    continue;
-                }
-                loc_a_e += 1;
-                if !cumulants.covered_parity_any(&error) {
-                    continue;
-                }
-                loc_a_l_e += 1;
+            let mut error = SparsePauli::new();
+            for index in &sample.indices[lo..hi] {
+                error.mult_inplace(&error_generators[*index as usize].0);
             }
-            *accepted_errors[rayon::current_thread_index().unwrap_or_default()]
-                .lock()
-                .unwrap() += loc_a_e;
-            *accepted_logical_errors[rayon::current_thread_index().unwrap_or_default()]
-                .lock()
-                .unwrap() += loc_a_l_e;
-        });
-        let accepted_errors: i32 = accepted_errors
-            .into_iter()
-            .map(|m| *m.lock().unwrap())
-            .sum::<i32>()
-            + (nshots as i32 - relevant_indices_len as i32);
-        let accepted_logical_errors: i32 = accepted_logical_errors
-            .into_iter()
-            .map(|m| *m.lock().unwrap())
-            .sum();
+            if error.paulis.is_empty() {
+                continue;
+            }
+            if self.post_selected_cumulants.covered_parity_any(&error) {
+                continue;
+            }
+            accepted_errors += 1;
+            if !self.logical_cumulants.covered_parity_any(&error) {
+                continue;
+            }
+            accepted_logical_errors += 1;
+        }
+        let accepted_errors = accepted_errors + (nshots - sample.nonempty) as i64;
         (
             accepted_errors as f64 / nshots as f64,
             accepted_logical_errors as f64 / accepted_errors as f64,

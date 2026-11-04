@@ -1,0 +1,27 @@
+[build-system]
+requires = ["scikit-build-core >=0.10"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "qiskit-paulice-rocm"
+version = "0.1.0"
+description = "A ROCm scoring engine for qiskit-paulice"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+# Built from a checkout, against that checkout's header, and installed next to
+# the qiskit-paulice of the same checkout. qiskit-paulice refuses an engine built
+# for another ABI version, so the version is not pinned here.
+dependencies = ["coheriq>=0.1.1, <0.10", "qiskit-paulice"]
+
+[project.entry-points."coheriq.engines.qiskit_paulice"]
+rocm = "qiskit_paulice_rocm._overrides"
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["src/qiskit_paulice_rocm"]
+wheel.py-api = "cp310"
+
+[tool.scikit-build.cmake.define]
+GPU_TARGETS = {env = "PAULICE_ROCM_ARCH", default = "gfx950"}
