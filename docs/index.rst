@@ -173,5 +173,5 @@ References
    :hidden:
    :caption: API reference
 
-   Python API reference <https://quantum.cloud.ibm.com/docs/en/api/qiskit-paulice>
+   Python API reference <https://quantum.cloud.ibm.com/docs/en/api/qiskit-addon-paulice>
    Release notes <release-notes>
