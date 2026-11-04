@@ -2,6 +2,8 @@
 name = "_internal-r"
 version = "0.1.0"
 edition = "2024"
+# Engines are separate packages, built from this checkout.
+exclude = ["engines/"]
 
 [lib]
 name = "_internal_r"

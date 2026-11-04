@@ -1,0 +1,54 @@
+name: ROCm engine build
+
+on:
+  push:
+    branches:
+      - main
+      - 'stable/**'
+    paths:
+      - 'engines/rocm/**'
+      - 'include/**'
+      - '.github/workflows/engine_rocm.yml'
+  pull_request:
+    branches:
+      - main
+      - 'stable/**'
+    paths:
+      - 'engines/rocm/**'
+      - 'include/**'
+      - '.github/workflows/engine_rocm.yml'
+
+jobs:
+  build:
+    # No GPU here: this checks that the engine compiles against the current
+    # header and loads, and that without a device every conformance check is
+    # skipped. The device itself is validated on AMD hardware.
+    name: build and load the ROCm engine
+    runs-on: ubuntu-latest
+    container: rocm/dev-ubuntu-24.04:7.2.2
+    timeout-minutes: 60
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends rocprim-dev python3-venv git curl ca-certificates
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+      - uses: actions/checkout@v7
+      - name: Build qiskit-paulice and the engine
+        run: |
+          . "$HOME/.cargo/env"
+          python3 -m venv /tmp/venv
+          . /tmp/venv/bin/activate
+          pip install ".[test]"
+          PAULICE_ROCM_ARCH=gfx950,gfx942 pip install ./engines/rocm
+      - name: Load the engine without a device
+        run: |
+          . /tmp/venv/bin/activate
+          PAULICE_ENGINE=rocm python - <<'EOF'
+          from qiskit_paulice import acceleration
+          results = acceleration.run_engine_conformance()
+          assert acceleration.scoring_engine_name() == "rocm"
+          assert {outcome for _, outcome, _ in results} == {"skipped"}, results
+          print(f"rocm engine loaded; {len(results)} checks skipped without a device")
+          EOF
+          PAULICE_ENGINE=rocm pytest -q test/test_acceleration.py

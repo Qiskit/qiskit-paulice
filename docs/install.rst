@@ -124,3 +124,23 @@ Costs are held to two different bars.
 A change to how qiskit-paulice computes a cost shows up in those pinned values. If
 engines have to follow it, the engine ABI version is bumped, and an engine built for the
 old version is refused.
+
+The ROCm engine
+"""""""""""""""
+
+The ``engines/rocm`` directory of this repository holds ``qiskit-paulice-rocm``, an engine
+named ``rocm`` that scores on an AMD GPU with 64-wide wavefronts; it has been validated
+on an AMD Instinct MI355X. It is not published as a wheel: it builds from a checkout,
+after qiskit-paulice itself, and needs CMake 3.21 or later and a ROCm install with the
+HIP runtime and rocPRIM:
+
+.. code:: sh
+
+    pip install .
+    pip install ./engines/rocm
+
+``ROCM_PATH`` (default ``/opt/rocm``) locates the toolchain, and ``PAULICE_ROCM_ARCH``
+(default ``gfx950``) takes a comma-separated list of GPU targets to compile for. Then
+run with ``PAULICE_ENGINE=rocm``. On any other device the engine opens no session and
+everything runs on the CPU. Setting ``PAULICE_ROCM_PROFILE=1`` prints the time of each
+device stage to standard error.
