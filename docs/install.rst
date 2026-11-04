@@ -92,11 +92,11 @@ means ``0``).
 
 An engine returns the same costs as the CPU, bit for bit, and anything it cannot score
 that way runs on the CPU as before. For ``cost="gamma"`` that includes searches with
-layered or gate-wise noise models, with stabilizers, or on more than 256 qubits. For
-``cost="LER"`` the engine draws the Monte Carlo sample as well as scoring it, from the
-same random streams as the CPU, so a seeded search finds the same checks at the same
-costs either way. A candidate runs on the CPU instead if it has more than 65535 error
-generators, if its packed scoring row exceeds 1024 words, or if the engine declines it.
+layered or gate-wise noise models or with stabilizers. For ``cost="LER"`` the engine
+draws the Monte Carlo sample as well as scoring it, from the same random streams as the
+CPU, so a seeded search finds the same checks at the same costs either way. An engine
+may also decline work past limits of its own, such as a largest circuit width, and its
+documentation lists them; that work runs on the CPU too.
 
 :func:`qiskit_paulice.acceleration.run_engine_conformance` checks the enabled engine
 against the CPU, and :func:`qiskit_paulice.acceleration.scoring_engine_name` reports

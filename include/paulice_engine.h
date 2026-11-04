@@ -18,6 +18,11 @@
 // from native code, without the GIL. Every call may decline by returning
 // non-zero, and qiskit-paulice then scores on the host.
 //
+// The only size limits here are those of the format: `PAULICE_MAX_QUBITS` and
+// the widths of the count fields. An engine with limits of its own, from its
+// hardware or its kernels, declines what exceeds them; they are not part of
+// this contract.
+//
 // The contract is bit-identical results. The structs below fix the layout, and
 // the version also fixes the semantics an engine must reproduce: the gate
 // encoding, the noise-generator enumeration, the summation order of gamma, the
@@ -101,6 +106,10 @@ typedef struct PauliceGammaBatch {
     double *out_rates;
 } PauliceGammaBatch;
 
+/// Most qubits a batch may have: `paulice_pack_gate` stores each qubit index in
+/// 12 bits.
+#define PAULICE_MAX_QUBITS 4096
+
 /// Packs a gate into the representation `gates` expects.
 static inline uint32_t paulice_pack_gate(uint32_t opcode, uint32_t q0, uint32_t q1) {
     return (opcode << 24) | (q0 << 12) | q1;
@@ -108,10 +117,6 @@ static inline uint32_t paulice_pack_gate(uint32_t opcode, uint32_t q0, uint32_t 
 
 /// Opaque per-device context holding the engine's streams and scratch buffers.
 typedef struct PauliceEngineCtx PauliceEngineCtx;
-
-/// Widest LER generator row, in 64-bit words. One wavefront scores a shot with
-/// the accumulator in registers, so this is a compile-time bound.
-#define PAULICE_LER_MAX_WORDS 1024
 
 /// A host-drawn LER sample and the packed generator rows to score it against.
 typedef struct PauliceLerBatch {
@@ -136,10 +141,6 @@ typedef struct PauliceLerBatch {
     uint64_t *out_accepted;
     uint64_t *out_logical;
 } PauliceLerBatch;
-
-
-/// Most generators the transpose handles; the generator is its grid's y index.
-#define PAULICE_LER_MAX_GENERATORS 65535
 
 /// Count reported for a generator whose draw would exceed `pos_stride`. The
 /// draw refuses rather than truncate, since a truncated draw would consume a

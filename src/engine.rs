@@ -17,8 +17,10 @@
 //! score bit-identically to the host; for anything else `gamma_scores` returns `None` and the caller
 //! scores on the host. `device::accepts` spells out what that rules out
 //! (non-empty stabilizers, noise models other than uniform depolarizing and
-//! readout, more than `MAX_QUBITS` qubits, an engine that opens no device), and
-//! `device::gamma_scores` also turns away any malformed candidate.
+//! readout, more qubits than the gate encoding holds, an engine that opens no
+//! device), and `device::gamma_scores` also turns away any malformed candidate.
+//! Limits an engine has beyond the format's are its own: it declines what
+//! exceeds them, and the host scores that work instead.
 //!
 //! For the LER the device draws the sample, transposes it and scores it, so
 //! the sample never crosses the bus. The draw is the host's draw: the same
@@ -120,8 +122,9 @@ pub enum CheckOutcome {
 ///
 /// The checks compare each engine entry point, and the evaluator paths that
 /// use them, with the host bit for bit. They are skipped when no engine is
-/// registered or no device session opens, and a decline fails them, since
-/// every input is well inside an engine's documented limits.
+/// registered or no device session opens. The gamma width sweep lets an engine
+/// decline widths past its own limit. Every other input is small, at most 64
+/// qubits, and a decline fails the check.
 pub fn run_conformance() -> Vec<(&'static str, CheckOutcome)> {
     let checks = gamma_conformance::CHECKS
         .iter()
@@ -300,7 +303,10 @@ mod gamma_conformance {
         //   * row count drives the wavefront packing. Past 32 rows a wave32
         //     device would diverge, and past 64 the columns need more than one
         //     word, which brings in the multi-row-block path.
-        for (nqubits, ngates, nmeasured) in [
+        //
+        // An engine may decline widths past its own limit. Every width it
+        // takes must match the host, and it must take at least one.
+        let accepted = [
             (4, 24, 3),
             (16, 60, 16),
             (40, 120, 40),
@@ -308,12 +314,13 @@ mod gamma_conformance {
             (128, 300, 128),
             (192, 360, 192),
             (256, 420, 256),
-        ] {
-            assert!(
-                assert_parity(nqubits, ngates, nmeasured, nqubits as u64),
-                "the device declined the {nqubits}-qubit batch"
-            );
-        }
+        ]
+        .into_iter()
+        .filter(|&(nqubits, ngates, nmeasured)| {
+            assert_parity(nqubits, ngates, nmeasured, nqubits as u64)
+        })
+        .count();
+        assert!(accepted > 0, "the device declined every batch");
     }
 
     pub(super) const CHECKS: &[(&str, fn())] = &[(
@@ -899,8 +906,9 @@ mod device {
     use rustiq_core::structures::{CliffordCircuit, CliffordGate};
     use std::sync::{Mutex, OnceLock};
 
-    /// Matches `MAX_QWORDS * 64` in the kernels.
-    const MAX_QUBITS: usize = 256;
+    /// Matches `PAULICE_MAX_QUBITS`, the qubit indices `paulice_pack_gate`
+    /// can encode.
+    const MAX_QUBITS: usize = 4096;
 
     const GATE_CNOT: u32 = 0;
     const GATE_CZ: u32 = 1;
@@ -939,12 +947,6 @@ mod device {
             pub n_blocks: i32,
             pub out_rates: *mut f64,
         }
-
-        /// Matches `PAULICE_LER_MAX_WORDS`.
-        pub const LER_MAX_WORDS: usize = 1024;
-
-        /// Matches `PAULICE_LER_MAX_GENERATORS`.
-        pub const LER_MAX_GENERATORS: usize = 65535;
 
         #[repr(C)]
         pub struct LerSampleScore {
@@ -1489,8 +1491,8 @@ mod device {
     ) -> bool {
         let ngen = tables.ngen;
         let stride = tables.stride();
-        (1..=ffi::LER_MAX_WORDS).contains(&stride)
-            && (1..=ffi::LER_MAX_GENERATORS).contains(&ngen)
+        (1..=i32::MAX as usize).contains(&stride)
+            && (1..=i32::MAX as usize).contains(&ngen)
             && tables.words.len() == ngen * stride
             && rates.len() == ngen
             && poisson.num_generators() == ngen
@@ -1642,14 +1644,14 @@ mod device {
         sample: &crate::ler::ShotSample,
     ) -> Option<crate::ler::ShotCounts> {
         let stride = tables.stride();
-        if stride == 0 || stride > ffi::LER_MAX_WORDS || tables.ngen == 0 || sample.nshots == 0 {
+        if stride == 0 || tables.ngen == 0 || sample.nshots == 0 {
             return None;
         }
         let (mut accepted, mut logical) = (0u64, 0u64);
         let batch = ffi::LerBatch {
             gen_words: tables.words.as_ptr(),
             n_generators: i32::try_from(tables.ngen).ok()?,
-            stride: stride as i32,
+            stride: i32::try_from(stride).ok()?,
             planes_end: (2 * tables.wire_words) as i32,
             post_end: (2 * tables.wire_words + tables.post_words) as i32,
             offsets: sample.offsets.as_ptr(),

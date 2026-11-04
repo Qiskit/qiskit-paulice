@@ -26,10 +26,8 @@ use std::os::raw::{c_char, c_int, c_void};
 use std::sync::atomic::{AtomicU8, Ordering};
 
 const ABI_VERSION: u32 = 1;
-const LER_MAX_WORDS: i32 = 1024;
-const LER_MAX_GENERATORS: u32 = 65535;
 const LER_DRAW_OVERFLOW: u32 = u32::MAX;
-const MAX_QUBITS: i32 = 256;
+const MAX_QUBITS: i32 = 4096;
 
 const GATE_CNOT: u32 = 0;
 const GATE_CZ: u32 = 1;
@@ -563,12 +561,7 @@ unsafe extern "C" fn ler_score(ctx: *mut Ctx, batch: *const LerBatch) -> c_int {
         return -1;
     }
     let b = unsafe { &*batch };
-    if b.n_shots <= 0
-        || b.n_generators <= 0
-        || b.n_indices < 0
-        || b.stride <= 0
-        || b.stride > LER_MAX_WORDS
-    {
+    if b.n_shots <= 0 || b.n_generators <= 0 || b.n_indices < 0 || b.stride <= 0 {
         return -1;
     }
     let stride = b.stride as usize;
@@ -637,11 +630,7 @@ unsafe extern "C" fn ler_transpose(ctx: *mut Ctx, req: *const LerTranspose) -> c
         return -1;
     }
     let r = unsafe { &*req };
-    if r.n_generators == 0
-        || r.n_generators > LER_MAX_GENERATORS
-        || r.n_shots == 0
-        || r.pos_stride == 0
-    {
+    if r.n_generators == 0 || r.n_shots == 0 || r.pos_stride == 0 {
         return -1;
     }
     let n_gen = r.n_generators as usize;
@@ -669,10 +658,8 @@ unsafe extern "C" fn ler_sample_score(ctx: *mut Ctx, req: *const LerSampleScore)
     }
     let r = unsafe { &*req };
     if r.n_generators <= 0
-        || r.n_generators as u32 > LER_MAX_GENERATORS
         || r.n_shots <= 0
         || r.stride <= 0
-        || r.stride > LER_MAX_WORDS
         || r.planes_end < 0
         || r.post_end < r.planes_end
         || r.post_end > r.stride
