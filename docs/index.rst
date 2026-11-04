@@ -85,11 +85,9 @@ Software features
 
 - Automatic noise model creation from backend benchmark data
 - Rust-accelerated check finding
-- Find checks for a circuit's terminal measurements or for stabilizers of the state it prepares
-- Three built-in algorithms for check finding
-- Evaluate efficacy of checks based on sampling overhead of postselected inverse noise channel or
-  logical error rate based on Monte Carlo sampling of noisy state
-- Helper functionality for finding ancilla/target qubit pairs for a given backend
+- 3 built-in algorithms for check finding
+- Support for RZ gate doping
+- Support for combining error detection with error mitigation 
 
 Known issues
 """"""""""""
@@ -104,8 +102,6 @@ Known issues
 Future work
 """""""""""
 
-- Support for handling non-Clifford systems
-- More support for analyzing postselected noise channel
 - Handling idling noise when picking checks
 - Controllable randomness for logical error rate cost function and genetic search algorithms
 
