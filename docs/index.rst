@@ -97,9 +97,9 @@ Known issues
 - Idling noise is not provided via ``NoiseModel.get_backend`` and is ignored during check picking
 - While many stochastic steps in the algorithm are controllable with a random seed, some features
   have randomness not controllable with a seed. Specifically, the following kwargs values for
-  ``add_pauli_checks`` will cause undeterministic check picking: ``cost="LER"``,
-  ``method="genetic"``, and ``method="windowed_genetic"``. For deterministic behavior use
-  ``add_pauli_checks(..., cost="gamma", method="windowed")``, which are the default values.
+  ``add_pauli_checks`` will cause undeterministic check picking: ``method="genetic"`` and
+  ``method="windowed_genetic"``. For deterministic behavior use ``method="windowed"``, the
+  default, with either ``cost="gamma"`` or ``cost="LER"``.
 
 Future work
 """""""""""
@@ -107,7 +107,7 @@ Future work
 - Support for handling non-Clifford systems
 - More support for analyzing postselected noise channel
 - Handling idling noise when picking checks
-- Controllable randomness for logical error rate cost function and genetic search algorithms
+- Controllable randomness for genetic search algorithms
 
 Contributing
 ------------

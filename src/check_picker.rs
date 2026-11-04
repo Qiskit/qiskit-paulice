@@ -553,7 +553,7 @@ mod check_picker_tests {
     /// cost of its first occurrence if it was served rather than resampled.
     #[test]
     fn score_checks_scores_each_distinct_candidate_once() {
-        let mut picker = measured_picker(Metric::logical_error_rate(200), 0.2);
+        let mut picker = measured_picker(Metric::logical_error_rate(200, None), 0.2);
         let (repeated, distinct) = repeated_candidates(&mut picker);
 
         let scored = picker.score_checks(&repeated);
