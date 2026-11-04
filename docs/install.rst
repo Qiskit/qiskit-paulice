@@ -143,4 +143,5 @@ HIP runtime and rocPRIM:
 (default ``gfx950``) takes a comma-separated list of GPU targets to compile for. Then
 run with ``PAULICE_ENGINE=rocm``. On any other device the engine opens no session and
 everything runs on the CPU. Setting ``PAULICE_ROCM_PROFILE=1`` prints the time of each
-device stage to standard error.
+device stage to standard error. ``engines/rocm/README.md`` lists the supported devices,
+what runs on the CPU instead, and how to run the conformance checks on a GPU.
