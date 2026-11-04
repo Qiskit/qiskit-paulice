@@ -53,12 +53,19 @@ jobs:
           cd qiskit-ibm-runtime
           git rev-parse HEAD
           python -m build --wheel
+      - name: Build Coheriq development wheel
+        run: |
+          git clone https://github.com/Qiskit/coheriq
+          cd coheriq
+          git rev-parse HEAD
+          python -m build --wheel
       - name: Pin development versions
         shell: bash
         run: >-
           extremal-python-dependencies pin-dependencies --inplace
           "qiskit @ file:$(realpath qiskit/dist/*.whl)"
           "qiskit-ibm-runtime @ file:$(realpath qiskit-ibm-runtime/dist/*.whl)"
+          "coheriq @ file:$(realpath coheriq/dist/*.whl)"
       - name: Test using tox environment
         run: |
           tox -e py,notebook --parallel --parallel-no-spinner

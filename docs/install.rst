@@ -62,3 +62,65 @@ If you installed the notebook dependencies, you can get started by running the n
 
     cd docs/
     jupyter lab
+
+Optional: score candidate checks with an acceleration engine
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Candidate checks for ``cost="gamma"`` and ``cost="LER"`` can be scored by a separately
+installed acceleration engine instead of on the CPU. Engines are discovered and enabled
+through `Coheriq <https://github.com/Qiskit/coheriq>`_, which is installed with
+qiskit-paulice, so only the engine package needs installing:
+
+.. code:: sh
+
+    pip install <engine-package>
+
+Then select the engine by name before the first call to
+:func:`~qiskit_paulice.add_pauli_checks`, either by setting ``PAULICE_ENGINE=<name>``
+before starting Python or in code:
+
+.. code:: python
+
+    import coheriq
+    import qiskit_paulice
+
+    coheriq.enable_engine(qiskit_paulice, "<name>")
+
+The choice is final for the rest of the process. ``PAULICE_ENGINE_DEVICE`` sets the
+index of the device the engine opens (default ``0``; a value that is not an integer also
+means ``0``).
+
+An engine returns the same costs as the CPU, bit for bit, and anything it cannot score
+that way runs on the CPU as before. For ``cost="gamma"`` that includes searches with
+layered or gate-wise noise models or with stabilizers. For ``cost="LER"`` the engine
+draws the Monte Carlo sample as well as scoring it, from the same random streams as the
+CPU, so a seeded search finds the same checks at the same costs either way. An engine
+may also decline work past limits of its own, such as a largest circuit width, and its
+documentation lists them; that work runs on the CPU too.
+
+:func:`qiskit_paulice.acceleration.run_engine_conformance` checks the enabled engine
+against the CPU, and :func:`qiskit_paulice.acceleration.scoring_engine_name` reports
+which engine is installed.
+
+What is reproducible
+""""""""""""""""""""
+
+Costs are held to two different bars.
+
+- **An engine against the CPU, on the same machine: bit for bit.** For
+  ``cost="gamma"`` the engine returns each candidate's summed fault rates, added in the
+  same order as on the CPU, and the CPU applies ``exp`` to them, so the device's maths
+  library never enters a score. For ``cost="LER"`` the engine draws from the same random
+  streams and Poisson tables as the CPU and counts shots as integers.
+  :func:`~qiskit_paulice.acceleration.run_engine_conformance` checks both.
+- **The CPU across platforms: close, but not always bit for bit.** The last bit of a
+  ``cost="gamma"`` score comes from the platform's ``exp``, so it can differ between
+  operating systems or after an update of the maths library. The test suite pins these
+  scores to a relative tolerance of ``1e-12``. ``cost="LER"`` counts are pinned exactly,
+  on Linux, macOS and Windows. The Poisson tables are built with ``exp`` too, so another
+  maths library could in principle move a single draw, though a last-bit difference
+  almost never does.
+
+A change to how qiskit-paulice computes a cost shows up in those pinned values. If
+engines have to follow it, the engine ABI version is bumped, and an engine built for the
+old version is refused.
