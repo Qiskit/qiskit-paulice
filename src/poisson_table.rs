@@ -37,15 +37,16 @@
 //!
 //!   - `UniformDepolarizing` and `Readout` each compute one rate and emit it
 //!     for every generator they produce, so those models have a handful of
-//!     distinct lambdas. A model with its own rate per edge has one lambda per
-//!     generator. Either way they are deduplicated below.
-//!   - `lambda` holds no candidate-dependent term, so a table built for one
-//!     candidate is the table every later candidate with that rate would
-//!     build. A search keeps them in a [`PoissonCache`] and reuses them.
+//!     distinct lambdas. A model with a distinct rate per edge has one lambda
+//!     per distinct rate, and the generators that share that rate share the
+//!     table. Either way they are deduplicated below.
+//!   - `lambda` holds no candidate-dependent term. Each evaluation still
+//!     builds its own tables. Sharing one cache across the parallel scoring
+//!     loop made a search with thousands of distinct rates slower.
 //!
 //! A table spans about 20 standard deviations, so it is O(sqrt(lambda)) and
 //! small for a uniform model: 797 entries at lambda 1500, under 7 KB. A
-//! per-edge model at a million shots is one such table per generator.
+//! per-edge model is one table per distinct rate.
 
 /// The inverse CDF of `Poisson(lambda)` over a truncated window.
 #[derive(Clone, Debug)]
@@ -162,46 +163,6 @@ impl PoissonTable {
     }
 }
 
-/// CDF tables already built for one search, keyed by `lambda.to_bits()`.
-///
-/// Shared by every candidate the search scores. Cloning shares the map, so a
-/// committed check keeps the tables the previous round built.
-#[derive(Clone, Default)]
-pub struct PoissonCache {
-    tables: std::sync::Arc<
-        std::sync::Mutex<std::collections::HashMap<u64, std::sync::Arc<PoissonTable>>>,
-    >,
-}
-
-impl std::fmt::Debug for PoissonCache {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let n = self.tables.lock().map(|guard| guard.len()).unwrap_or(0);
-        write!(f, "PoissonCache({n} tables)")
-    }
-}
-
-impl PoissonCache {
-    fn get_or_build(&self, bits: u64, lambda: f64) -> std::sync::Arc<PoissonTable> {
-        if let Some(table) = self.tables.lock().unwrap().get(&bits) {
-            return std::sync::Arc::clone(table);
-        }
-        // Built outside the lock: two candidates that meet a new lambda at the
-        // same moment may each construct it, and the map keeps one.
-        let built = std::sync::Arc::new(PoissonTable::new(lambda));
-        let mut guard = self.tables.lock().unwrap();
-        std::sync::Arc::clone(
-            guard
-                .entry(bits)
-                .or_insert_with(|| std::sync::Arc::clone(&built)),
-        )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn len(&self) -> usize {
-        self.tables.lock().unwrap().len()
-    }
-}
-
 /// One table per distinct lambda, plus the per-generator index into them.
 ///
 /// Deduplicated on the bit pattern rather than with a tolerance: two rates
@@ -209,37 +170,22 @@ impl PoissonCache {
 /// which keeps this from quietly changing anyone's distribution to save a few
 /// kilobytes.
 pub struct PoissonTables {
-    tables: Vec<std::sync::Arc<PoissonTable>>,
+    tables: Vec<PoissonTable>,
     /// `table_of[g]` indexes `tables` for generator `g`.
     table_of: Vec<u32>,
 }
 
 impl PoissonTables {
     pub fn build(rates: &[f64], nshots: usize) -> Self {
-        Self::build_cached(rates, nshots, None)
-    }
-
-    /// `cache` holds tables already built for this search. A miss builds one
-    /// and stores it; the per-generator index is still filled in for this call.
-    pub(crate) fn build_cached(rates: &[f64], nshots: usize, cache: Option<&PoissonCache>) -> Self {
-        let mut tables: Vec<std::sync::Arc<PoissonTable>> = Vec::new();
+        let mut tables: Vec<PoissonTable> = Vec::new();
         let mut seen: std::collections::HashMap<u64, u32> = std::collections::HashMap::new();
         let mut table_of = Vec::with_capacity(rates.len());
         for rate in rates {
             let lambda = nshots as f64 * crate::coverage::proba_from_rate(*rate);
-            let bits = lambda.to_bits();
-            let slot = if let Some(&slot) = seen.get(&bits) {
-                slot
-            } else {
-                let table = match cache {
-                    Some(cache) => cache.get_or_build(bits, lambda),
-                    None => std::sync::Arc::new(PoissonTable::new(lambda)),
-                };
-                let slot = tables.len() as u32;
-                tables.push(table);
-                seen.insert(bits, slot);
-                slot
-            };
+            let slot = *seen.entry(lambda.to_bits()).or_insert_with(|| {
+                tables.push(PoissonTable::new(lambda));
+                (tables.len() - 1) as u32
+            });
             table_of.push(slot);
         }
         Self { tables, table_of }
@@ -498,33 +444,6 @@ mod tests {
             (got - want).abs() / want > 1e-12,
             "a table built for lambda=1515 agreed with scipy at lambda=1500, \
              so the comparison is insensitive"
-        );
-    }
-
-    #[test]
-    fn a_search_reuses_tables_it_has_already_built() {
-        let first = vec![0.001, 0.002, 0.001, 0.003];
-        let second = vec![0.003, 0.004, 0.001];
-        let cache = PoissonCache::default();
-        let built = PoissonTables::build_cached(&first, 10_000, Some(&cache));
-        assert_eq!(cache.len(), built.num_tables());
-        let again = PoissonTables::build_cached(&first, 10_000, Some(&cache));
-        assert_eq!(
-            cache.len(),
-            built.num_tables(),
-            "rebuilding the same rates should not add tables"
-        );
-        for i in 0..first.len() {
-            assert_eq!(
-                built.for_generator(i).window(),
-                again.for_generator(i).window()
-            );
-        }
-        let _more = PoissonTables::build_cached(&second, 10_000, Some(&cache));
-        assert_eq!(
-            cache.len(),
-            built.num_tables() + 1,
-            "only the new rate should add a table"
         );
     }
 }

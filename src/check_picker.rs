@@ -98,9 +98,6 @@ pub struct CheckPicker {
     check_decoder: Option<CheckDecoder>,
     /// Shared memo of candidate evaluations for the current evaluator state
     eval_memo: EvalMemo,
-    /// Poisson CDFs for this search. `lambda` does not depend on the candidate
-    /// or on which checks have been committed, so the map survives both.
-    poisson_cache: crate::poisson_table::PoissonCache,
 }
 
 #[pymethods]
@@ -166,7 +163,6 @@ impl CheckPicker {
             check_group: None,
             check_decoder: None,
             eval_memo: EvalMemo::default(),
-            poisson_cache: crate::poisson_table::PoissonCache::default(),
         }
     }
 
@@ -199,7 +195,6 @@ impl CheckPicker {
             self.check_data.0.clone(),
             self.check_data.1.clone(),
             ancilla,
-            self.poisson_cache.clone(),
         ));
         // New evaluator state -> previously memoized evaluations no longer apply.
         self.eval_memo = EvalMemo::default();
@@ -481,9 +476,6 @@ impl CheckPicker {
             check_decoder: None,
             // Committing changes the circuit and check data; start a fresh memo.
             eval_memo: EvalMemo::default(),
-            // A committed check does not change existing rates, so later rounds
-            // of this search reuse these tables.
-            poisson_cache: self.poisson_cache.clone(),
         }
     }
 }
@@ -574,28 +566,5 @@ mod check_picker_tests {
             assert_eq!(*seen, (vzs.clone(), cost.to_bits()));
         }
         assert_eq!(picker.eval_memo.lock().unwrap().len(), distinct);
-    }
-
-    #[test]
-    fn a_search_keeps_its_poisson_tables() {
-        let mut picker = measured_picker(Metric::logical_error_rate(200, Some(1)), 0.01);
-        let (checks, _) = repeated_candidates(&mut picker);
-        assert_eq!(picker.poisson_cache.len(), 0);
-        let scored = picker.score_checks(&checks);
-        let stored = picker.poisson_cache.len();
-        assert!(stored > 0, "scoring should build a table");
-        picker.score_checks(&checks);
-        assert_eq!(
-            picker.poisson_cache.len(),
-            stored,
-            "a second round should reuse the tables"
-        );
-        let (vzs, _) = &scored[0];
-        let committed = picker.commit_check(checks[0].clone(), vzs.clone());
-        assert_eq!(
-            committed.poisson_cache.len(),
-            stored,
-            "committing a check should keep the tables for the next round"
-        );
     }
 }

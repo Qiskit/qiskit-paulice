@@ -207,17 +207,8 @@ impl<'a> Coverage<'a> {
     /// With `seed = None` a fresh base seed is drawn from an OS-seeded
     /// generator on every call, so the result varies from call to call.
     pub fn approximate_psr_ler(&self, nshots: usize, seed: Option<u64>) -> (f64, f64) {
-        self.approximate_psr_ler_cached(nshots, seed, None)
-    }
-
-    pub(crate) fn approximate_psr_ler_cached(
-        &self,
-        nshots: usize,
-        seed: Option<u64>,
-        cache: Option<&crate::poisson_table::PoissonCache>,
-    ) -> (f64, f64) {
         let error_generators = self.get_generator_errors();
-        let sample = crate::ler::sample_shots_cached(&error_generators, nshots, seed, cache);
+        let sample = crate::ler::sample_shots(&error_generators, nshots, seed);
         self.psr_ler_from_sample(&error_generators, &sample)
     }
 

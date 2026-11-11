@@ -122,27 +122,15 @@ pub struct ShotSample {
 /// sample is therefore different on every call but still independent of how
 /// rayon splits the work, and there is one draw path to keep bit-exact.
 pub fn sample_shots(generators: &[NoiseGenerator], nshots: usize, seed: Option<u64>) -> ShotSample {
-    sample_shots_cached(generators, nshots, seed, None)
-}
-
-/// `sample_shots` with a search-scoped table cache.
-///
-/// `lambda` carries no candidate-dependent term, so a cache hit returns the
-/// table a fresh build would have computed. The per-generator index is filled
-/// in either way. A uniform model is a handful of tables; a per-edge model is
-/// one per generator, which is the case the cache exists for.
-pub(crate) fn sample_shots_cached(
-    generators: &[NoiseGenerator],
-    nshots: usize,
-    seed: Option<u64>,
-    cache: Option<&crate::poisson_table::PoissonCache>,
-) -> ShotSample {
     assert!(
         nshots <= u32::MAX as usize,
         "shot positions are stored as u32"
     );
+    // One table per distinct lambda, shared by the generators in this call
+    // that have it. A uniform model is a handful of tables. A per-edge model
+    // is one per distinct rate.
     let rates: Vec<f64> = generators.iter().map(|(_, rate)| *rate).collect();
-    let tables = PoissonTables::build_cached(&rates, nshots, cache);
+    let tables = PoissonTables::build(&rates, nshots);
 
     let base = seed.unwrap_or_else(|| rand::rng().random::<u64>());
 
@@ -591,23 +579,6 @@ mod tests {
                 "generator {index} drew a different sample on a repeat call"
             );
         }
-    }
-
-    #[test]
-    fn a_shared_cache_draws_the_same_sample() {
-        let rates: Vec<f64> = (0..32).map(|i| 0.001 * (1 + (i % 5)) as f64).collect();
-        let generators: Vec<NoiseGenerator> = rates
-            .iter()
-            .map(|r| (crate::sparse_pauli::SparsePauli::new(), *r))
-            .collect();
-        let cache = crate::poisson_table::PoissonCache::default();
-        let cached = sample_shots_cached(&generators, 1024, Some(7), Some(&cache));
-        let fresh = sample_shots(&generators, 1024, Some(7));
-        assert_eq!(cached.offsets, fresh.offsets);
-        assert_eq!(cached.indices, fresh.indices);
-        let stored = cache.len();
-        let _again = sample_shots_cached(&generators, 1024, Some(8), Some(&cache));
-        assert_eq!(cache.len(), stored, "a second draw should reuse the tables");
     }
 
     #[test]
