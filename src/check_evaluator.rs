@@ -15,6 +15,7 @@ use super::coverage::Coverage;
 use super::metric::Metric;
 use super::noise_model::UNoiseModel;
 use super::pauli::Pauli;
+use super::poisson_table::PoissonCache;
 use super::sparse_pauli::SparsePauli;
 use super::stabilizer_group::StabilizerGroup;
 use rayon::prelude::*;
@@ -30,6 +31,8 @@ pub struct CheckEvaluator {
     current_checks: Vec<usize>,
     current_virtual_zs: Vec<Vec<usize>>,
     ancilla: usize,
+    /// Poisson CDFs shared by every candidate this evaluator scores.
+    poisson_cache: PoissonCache,
 }
 
 impl CheckEvaluator {
@@ -43,6 +46,7 @@ impl CheckEvaluator {
         current_checks: Vec<usize>,
         current_virtual_zs: Vec<Vec<usize>>,
         ancilla: usize,
+        poisson_cache: PoissonCache,
     ) -> Self {
         Self {
             base_circuit,
@@ -53,6 +57,7 @@ impl CheckEvaluator {
             current_checks,
             current_virtual_zs,
             ancilla,
+            poisson_cache,
         }
     }
 
@@ -70,7 +75,11 @@ impl CheckEvaluator {
         coverage.set_check_cumulants(&all_check_qubits, &all_virtual_zs);
         coverage.set_logical_cumulants(&self.stabilizers, &self.measured_qubits);
         match self.metric {
-            Metric::LogicalErrorRate(nshots, seed) => coverage.approximate_psr_ler(nshots, seed).1,
+            Metric::LogicalErrorRate(nshots, seed) => {
+                coverage
+                    .approximate_psr_ler_cached(nshots, seed, Some(&self.poisson_cache))
+                    .1
+            }
             Metric::Gamma => coverage.gamma_apx(),
             Metric::BalancedGamma => coverage.balanced_gamma_apx(),
         }
@@ -117,7 +126,11 @@ impl CheckEvaluator {
         coverage.set_check_cumulants(&self.current_checks, &self.current_virtual_zs);
         coverage.set_logical_cumulants(&self.stabilizers, &self.measured_qubits);
         match self.metric {
-            Metric::LogicalErrorRate(nshots, seed) => coverage.approximate_psr_ler(nshots, seed).1,
+            Metric::LogicalErrorRate(nshots, seed) => {
+                coverage
+                    .approximate_psr_ler_cached(nshots, seed, Some(&self.poisson_cache))
+                    .1
+            }
             Metric::Gamma => coverage.gamma_apx(),
             Metric::BalancedGamma => coverage.balanced_gamma_apx(),
         }

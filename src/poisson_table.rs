@@ -19,21 +19,33 @@
 //! known ahead of time, so they cannot be precomputed, and two libm
 //! implementations need not agree on the last ulp of either. A seeded sample
 //! drawn that way is statistically correct everywhere and reproducible only on
-//! the platform it was drawn on.
+//! the platform it was drawn on. The tabulated draw below removes that
+//! dependence from the sampling step. It remains in the construction of
+//! `lambda`, as the next paragraph describes.
 //!
 //! Inverting a tabulated CDF instead moves every hard function into building
-//! the table and leaves the draw as a binary search over `f64` comparisons. It
-//! is viable here because of two facts about how rates enter:
+//! the table and leaves the draw as a binary search over `f64` comparisons.
+//! Given the same table, that search cannot disagree between platforms. The
+//! table is built from `lambda = nshots * proba_from_rate(rate)`, and both
+//! `proba_from_rate` and the noise model's rates go through `exp` or `ln`,
+//! which IEEE-754 does not pin bit for bit. Deduplication is on
+//! `lambda.to_bits()`, so one ulp of `lambda` builds a different table. A
+//! seeded sample therefore repeats on a given build, not across libm
+//! implementations.
+//!
+//! The table is viable here because of how rates enter:
 //!
 //!   - `UniformDepolarizing` and `Readout` each compute one rate and emit it
-//!     for every generator they produce, so a typical model has a handful of
-//!     distinct lambdas rather than one per generator. They are deduplicated
-//!     below.
-//!   - `lambda = nshots * proba_from_rate(rate)` holds no candidate-dependent
-//!     term, so it is fixed for an entire search.
+//!     for every generator they produce, so those models have a handful of
+//!     distinct lambdas. A model with its own rate per edge has one lambda per
+//!     generator. Either way they are deduplicated below.
+//!   - `lambda` holds no candidate-dependent term, so a table built for one
+//!     candidate is the table every later candidate with that rate would
+//!     build. A search keeps them in a [`PoissonCache`] and reuses them.
 //!
 //! A table spans about 20 standard deviations, so it is O(sqrt(lambda)) and
-//! tiny: 797 entries at lambda 1500, under 7 KB.
+//! small for a uniform model: 797 entries at lambda 1500, under 7 KB. A
+//! per-edge model at a million shots is one such table per generator.
 
 /// The inverse CDF of `Poisson(lambda)` over a truncated window.
 #[derive(Clone, Debug)]
@@ -125,8 +137,9 @@ impl PoissonTable {
 
     /// The count for a uniform `u` in `[0, 1)`.
     ///
-    /// Comparisons only, which is the entire point: nothing here can round
-    /// differently from one platform to another.
+    /// Comparisons only, so given this table the count is the same on every
+    /// platform. The table itself depends on `lambda`, which has already been
+    /// through `exp` and `ln`. See the module docs.
     #[inline]
     pub fn sample(&self, u: f64) -> u32 {
         debug_assert!((0.0..1.0).contains(&u), "u must be in [0,1), got {u}");
@@ -149,6 +162,46 @@ impl PoissonTable {
     }
 }
 
+/// CDF tables already built for one search, keyed by `lambda.to_bits()`.
+///
+/// Shared by every candidate the search scores. Cloning shares the map, so a
+/// committed check keeps the tables the previous round built.
+#[derive(Clone, Default)]
+pub struct PoissonCache {
+    tables: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<u64, std::sync::Arc<PoissonTable>>>,
+    >,
+}
+
+impl std::fmt::Debug for PoissonCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let n = self.tables.lock().map(|guard| guard.len()).unwrap_or(0);
+        write!(f, "PoissonCache({n} tables)")
+    }
+}
+
+impl PoissonCache {
+    fn get_or_build(&self, bits: u64, lambda: f64) -> std::sync::Arc<PoissonTable> {
+        if let Some(table) = self.tables.lock().unwrap().get(&bits) {
+            return std::sync::Arc::clone(table);
+        }
+        // Built outside the lock: two candidates that meet a new lambda at the
+        // same moment may each construct it, and the map keeps one.
+        let built = std::sync::Arc::new(PoissonTable::new(lambda));
+        let mut guard = self.tables.lock().unwrap();
+        std::sync::Arc::clone(
+            guard
+                .entry(bits)
+                .or_insert_with(|| std::sync::Arc::clone(&built)),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.tables.lock().unwrap().len()
+    }
+}
+
 /// One table per distinct lambda, plus the per-generator index into them.
 ///
 /// Deduplicated on the bit pattern rather than with a tolerance: two rates
@@ -156,22 +209,37 @@ impl PoissonTable {
 /// which keeps this from quietly changing anyone's distribution to save a few
 /// kilobytes.
 pub struct PoissonTables {
-    tables: Vec<PoissonTable>,
+    tables: Vec<std::sync::Arc<PoissonTable>>,
     /// `table_of[g]` indexes `tables` for generator `g`.
     table_of: Vec<u32>,
 }
 
 impl PoissonTables {
     pub fn build(rates: &[f64], nshots: usize) -> Self {
-        let mut tables: Vec<PoissonTable> = Vec::new();
+        Self::build_cached(rates, nshots, None)
+    }
+
+    /// `cache` holds tables already built for this search. A miss builds one
+    /// and stores it; the per-generator index is still filled in for this call.
+    pub(crate) fn build_cached(rates: &[f64], nshots: usize, cache: Option<&PoissonCache>) -> Self {
+        let mut tables: Vec<std::sync::Arc<PoissonTable>> = Vec::new();
         let mut seen: std::collections::HashMap<u64, u32> = std::collections::HashMap::new();
         let mut table_of = Vec::with_capacity(rates.len());
         for rate in rates {
             let lambda = nshots as f64 * crate::coverage::proba_from_rate(*rate);
-            let slot = *seen.entry(lambda.to_bits()).or_insert_with(|| {
-                tables.push(PoissonTable::new(lambda));
-                (tables.len() - 1) as u32
-            });
+            let bits = lambda.to_bits();
+            let slot = if let Some(&slot) = seen.get(&bits) {
+                slot
+            } else {
+                let table = match cache {
+                    Some(cache) => cache.get_or_build(bits, lambda),
+                    None => std::sync::Arc::new(PoissonTable::new(lambda)),
+                };
+                let slot = tables.len() as u32;
+                tables.push(table);
+                seen.insert(bits, slot);
+                slot
+            };
             table_of.push(slot);
         }
         Self { tables, table_of }
@@ -430,6 +498,33 @@ mod tests {
             (got - want).abs() / want > 1e-12,
             "a table built for lambda=1515 agreed with scipy at lambda=1500, \
              so the comparison is insensitive"
+        );
+    }
+
+    #[test]
+    fn a_search_reuses_tables_it_has_already_built() {
+        let first = vec![0.001, 0.002, 0.001, 0.003];
+        let second = vec![0.003, 0.004, 0.001];
+        let cache = PoissonCache::default();
+        let built = PoissonTables::build_cached(&first, 10_000, Some(&cache));
+        assert_eq!(cache.len(), built.num_tables());
+        let again = PoissonTables::build_cached(&first, 10_000, Some(&cache));
+        assert_eq!(
+            cache.len(),
+            built.num_tables(),
+            "rebuilding the same rates should not add tables"
+        );
+        for i in 0..first.len() {
+            assert_eq!(
+                built.for_generator(i).window(),
+                again.for_generator(i).window()
+            );
+        }
+        let _more = PoissonTables::build_cached(&second, 10_000, Some(&cache));
+        assert_eq!(
+            cache.len(),
+            built.num_tables() + 1,
+            "only the new rate should add a table"
         );
     }
 }

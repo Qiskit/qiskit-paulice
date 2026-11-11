@@ -198,40 +198,59 @@ impl<'a> Coverage<'a> {
 
     /// Monte Carlo estimate of `(post-selection acceptance, logical error rate)`.
     ///
-    /// With `seed = Some(s)` the estimate is reproducible: identical across
-    /// repeated calls and across thread counts. The sample is keyed per
-    /// generator index (see `ler::sample_shots`), so it does not depend on
-    /// scheduling.
+    /// With `seed = Some(s)` the estimate is reproducible on a given build:
+    /// identical across repeated calls and across thread counts. The sample is
+    /// keyed per generator index (see `ler::sample_shots`), so it does not
+    /// depend on scheduling. The Poisson table is built from `exp` and `ln`,
+    /// so another platform can draw a different sample from the same seed.
     ///
     /// With `seed = None` a fresh base seed is drawn from an OS-seeded
     /// generator on every call, so the result varies from call to call.
     pub fn approximate_psr_ler(&self, nshots: usize, seed: Option<u64>) -> (f64, f64) {
+        self.approximate_psr_ler_cached(nshots, seed, None)
+    }
+
+    pub(crate) fn approximate_psr_ler_cached(
+        &self,
+        nshots: usize,
+        seed: Option<u64>,
+        cache: Option<&crate::poisson_table::PoissonCache>,
+    ) -> (f64, f64) {
         let error_generators = self.get_generator_errors();
-        let sample = crate::ler::sample_shots(&error_generators, nshots, seed);
+        let sample = crate::ler::sample_shots_cached(&error_generators, nshots, seed, cache);
+        self.psr_ler_from_sample(&error_generators, &sample)
+    }
+
+    fn psr_ler_from_sample(
+        &self,
+        error_generators: &[NoiseGenerator],
+        sample: &crate::ler::ShotSample,
+    ) -> (f64, f64) {
         let tables = crate::ler::LerTables::pack(
-            &error_generators,
+            error_generators,
             &self.post_selected_cumulants,
             &self.logical_cumulants,
             self.circuit.nqbits,
         );
-        let counts = crate::ler::score_shots(&tables, &sample);
+        let counts = crate::ler::score_shots(&tables, sample);
 
         // Shots in which nothing fired carry an identity error, which
         // post-selection accepts; they are counted here rather than scored.
-        let accepted = counts.accepted + (nshots - sample.nonempty) as u64;
-        psr_and_ler(accepted, counts.logical, nshots)
+        let accepted = counts.accepted + (sample.nshots - sample.nonempty) as u64;
+        psr_and_ler(accepted, counts.logical, sample.nshots)
     }
 
     /// The hash-map scorer, kept as the reference the packed scorer's parity
     /// tests check against.
     ///
-    /// Counts in `u64` and finishes through `psr_and_ler`, same as the packed
-    /// scorer, so the two cannot disagree on a zero-acceptance sample or on a
-    /// shot count past `i32::MAX`.
+    /// Takes the sample the packed scorer used, so the comparison is about the
+    /// scoring and not about two draws. Counts in `u64` and finishes through
+    /// `psr_and_ler`, same as the packed scorer, so the two cannot disagree on
+    /// a zero-acceptance sample or on a shot count past `i32::MAX`.
     #[cfg(test)]
-    pub fn approximate_psr_ler_reference(&self, nshots: usize, seed: Option<u64>) -> (f64, f64) {
+    pub fn approximate_psr_ler_reference(&self, sample: &crate::ler::ShotSample) -> (f64, f64) {
         let error_generators = self.get_generator_errors();
-        let sample = crate::ler::sample_shots(&error_generators, nshots, seed);
+        let nshots = sample.nshots;
 
         let mut accepted_errors: u64 = 0;
         let mut accepted_logical_errors: u64 = 0;
@@ -259,6 +278,22 @@ impl<'a> Coverage<'a> {
         }
         let accepted_errors = accepted_errors + (nshots - sample.nonempty) as u64;
         psr_and_ler(accepted_errors, accepted_logical_errors, nshots)
+    }
+
+    /// One draw, scored both ways. The parity test uses this so the reference
+    /// cannot silently compare a second sample.
+    #[cfg(test)]
+    pub fn ler_scores_of_one_sample(
+        &self,
+        nshots: usize,
+        seed: Option<u64>,
+    ) -> ((f64, f64), (f64, f64)) {
+        let error_generators = self.get_generator_errors();
+        let sample = crate::ler::sample_shots(&error_generators, nshots, seed);
+        (
+            self.psr_ler_from_sample(&error_generators, &sample),
+            self.approximate_psr_ler_reference(&sample),
+        )
     }
 }
 
