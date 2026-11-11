@@ -37,7 +37,7 @@ value-based workflows.
 
 ### Documentation
 
-[Documentation](https://quantum.cloud.ibm.com/docs/addons/qiskit-paulice) for this package is available on the IBM Quantum Platform.
+[Documentation](https://quantum.cloud.ibm.com/docs/addons/qiskit-addon-paulice) for this package is available on the IBM Quantum Platform.
 
 ----------------------------------------------------------------------------------------------------
 
@@ -112,11 +112,9 @@ $\bigoplus_{i=1} b_i = 0$. A sample is kept if each check produces $0$ for its p
 
 - Automatic noise model creation from backend benchmark data
 - Rust accelerated check finding
-- Find checks for a circuit's terminal measurements or for stabilizers of the state it prepares
 - 3 built-in algorithms for check finding
-- Evaluate efficacy of checks based on sampling overhead of postselected inverse noise channel or
-  logical error rate based on Monte Carlo sampling of noisy state
-- Helper functionality for finding ancilla/target qubit pairs for a given backend
+- Support for RZ gate doping
+- Support for combining error detection with error mitigation
 
 #### Known issues
 
@@ -129,8 +127,6 @@ with either ``cost="gamma"`` or ``cost="LER"``.
 
 #### Future work
 
-- Support for handling non-Clifford systems
-- More support for analyzing postselected noise channel
 - Handling idling noise when picking checks
 - Controllable randomness for genetic search algorithms
 

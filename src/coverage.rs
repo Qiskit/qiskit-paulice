@@ -219,21 +219,22 @@ impl<'a> Coverage<'a> {
         // Shots in which nothing fired carry an identity error, which
         // post-selection accepts; they are counted here rather than scored.
         let accepted = counts.accepted + (nshots - sample.nonempty) as u64;
-        (
-            accepted as f64 / nshots as f64,
-            counts.logical as f64 / accepted as f64,
-        )
+        psr_and_ler(accepted, counts.logical, nshots)
     }
 
     /// The hash-map scorer, kept as the reference the packed scorer's parity
     /// tests check against.
+    ///
+    /// Counts in `u64` and finishes through `psr_and_ler`, same as the packed
+    /// scorer, so the two cannot disagree on a zero-acceptance sample or on a
+    /// shot count past `i32::MAX`.
     #[cfg(test)]
     pub fn approximate_psr_ler_reference(&self, nshots: usize, seed: Option<u64>) -> (f64, f64) {
         let error_generators = self.get_generator_errors();
         let sample = crate::ler::sample_shots(&error_generators, nshots, seed);
 
-        let mut accepted_errors: i64 = 0;
-        let mut accepted_logical_errors: i64 = 0;
+        let mut accepted_errors: u64 = 0;
+        let mut accepted_logical_errors: u64 = 0;
         for shot in 0..nshots {
             let lo = sample.offsets[shot] as usize;
             let hi = sample.offsets[shot + 1] as usize;
@@ -256,10 +257,51 @@ impl<'a> Coverage<'a> {
             }
             accepted_logical_errors += 1;
         }
-        let accepted_errors = accepted_errors + (nshots - sample.nonempty) as i64;
-        (
-            accepted_errors as f64 / nshots as f64,
-            accepted_logical_errors as f64 / accepted_errors as f64,
-        )
+        let accepted_errors = accepted_errors + (nshots - sample.nonempty) as u64;
+        psr_and_ler(accepted_errors, accepted_logical_errors, nshots)
+    }
+}
+
+/// The post-selection rate and the logical error rate among accepted shots.
+///
+/// When post-selection accepts no sampled shot the rate is undefined: the
+/// sample held no shot without a detected fault, usually because it was too
+/// small for the noise level. It ranks last at 1, so a candidate without an
+/// estimate is never preferred over one with an estimate; NaN would compare
+/// false against every other candidate.
+///
+/// Counts are `u64`. The previous `i32` counters overflowed once a search asked
+/// for more than `2^31` shots, and the packed scorer counts in `u64` for that
+/// reason; narrowing here would put the overflow back.
+fn psr_and_ler(accepted: u64, accepted_logical: u64, nshots: usize) -> (f64, f64) {
+    if accepted == 0 {
+        return (0.0, 1.0);
+    }
+    (
+        accepted as f64 / nshots as f64,
+        accepted_logical as f64 / accepted as f64,
+    )
+}
+
+#[cfg(test)]
+mod psr_and_ler_tests {
+    use super::psr_and_ler;
+
+    #[test]
+    fn no_accepted_shot_is_the_worst_ler() {
+        assert_eq!(psr_and_ler(0, 0, 100), (0.0, 1.0));
+    }
+
+    #[test]
+    fn accepted_shots_give_the_ratios() {
+        assert_eq!(psr_and_ler(50, 5, 100), (0.5, 0.1));
+    }
+
+    #[test]
+    fn counts_above_i32_max_stay_exact() {
+        let n = (i32::MAX as u64) + 1;
+        let (psr, ler) = psr_and_ler(n, n / 4, n as usize);
+        assert_eq!(psr, 1.0);
+        assert_eq!(ler, 0.25);
     }
 }
