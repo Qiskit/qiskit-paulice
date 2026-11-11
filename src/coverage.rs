@@ -29,7 +29,7 @@ use rustiq_core::structures::CliffordCircuit;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Mutex;
 
-fn proba_from_rate(rate: f64) -> f64 {
+pub(crate) fn proba_from_rate(rate: f64) -> f64 {
     1. - (1. + (-2. * rate).exp()) / 2.
 }
 
@@ -196,89 +196,95 @@ impl<'a> Coverage<'a> {
             .gamma_score(&self.post_selected_cumulants, &self.logical_cumulants)
     }
 
-    pub fn approximate_psr_ler(&self, nshots: usize) -> (f64, f64) {
+    /// Monte Carlo estimate of `(post-selection acceptance, logical error rate)`.
+    ///
+    /// With `seed = Some(s)` the estimate is reproducible on a given build:
+    /// identical across repeated calls and across thread counts. The sample is
+    /// keyed per generator index (see `ler::sample_shots`), so it does not
+    /// depend on scheduling. The Poisson table is built from `exp` and `ln`,
+    /// so another platform can draw a different sample from the same seed.
+    ///
+    /// With `seed = None` a fresh base seed is drawn from an OS-seeded
+    /// generator on every call, so the result varies from call to call.
+    pub fn approximate_psr_ler(&self, nshots: usize, seed: Option<u64>) -> (f64, f64) {
         let error_generators = self.get_generator_errors();
+        let sample = crate::ler::sample_shots(&error_generators, nshots, seed);
+        self.psr_ler_from_sample(&error_generators, &sample)
+    }
 
-        let reverse_bins: Vec<_> = (0..nshots).map(|_| Mutex::new(Vec::new())).collect();
-        error_generators
-            .clone()
-            .into_par_iter()
-            .enumerate()
-            .for_each(|(index, (_, e))| {
-                let lambda = (nshots as f64) * proba_from_rate(e);
-                let trng = &mut ThreadRng::default();
-                let poisson = Poisson::new(lambda).unwrap();
-                let num_successes = poisson.sample(trng) as usize;
-                let mut pos = BTreeSet::new();
-                while pos.len() < num_successes {
-                    pos.insert(trng.random_range(0..nshots));
-                }
-                for elem in pos.into_iter() {
-                    reverse_bins[elem].lock().unwrap().push(index);
-                }
-            });
-        let reverse_bins_buckets: Vec<Mutex<Vec<Vec<usize>>>> = (0..rayon::current_num_threads())
-            .map(|_| Mutex::new(Vec::new()))
-            .collect();
-        reverse_bins.into_par_iter().for_each(|b| {
-            if !b.lock().unwrap().is_empty() {
-                reverse_bins_buckets[rayon::current_thread_index().unwrap()]
-                    .lock()
-                    .unwrap()
-                    .push(b.lock().unwrap().clone());
+    fn psr_ler_from_sample(
+        &self,
+        error_generators: &[NoiseGenerator],
+        sample: &crate::ler::ShotSample,
+    ) -> (f64, f64) {
+        let tables = crate::ler::LerTables::pack(
+            error_generators,
+            &self.post_selected_cumulants,
+            &self.logical_cumulants,
+            self.circuit.nqbits,
+        );
+        let counts = crate::ler::score_shots(&tables, sample);
+
+        // Shots in which nothing fired carry an identity error, which
+        // post-selection accepts; they are counted here rather than scored.
+        let accepted = counts.accepted + (sample.nshots - sample.nonempty) as u64;
+        psr_and_ler(accepted, counts.logical, sample.nshots)
+    }
+
+    /// The hash-map scorer, kept as the reference the packed scorer's parity
+    /// tests check against.
+    ///
+    /// Takes the sample the packed scorer used, so the comparison is about the
+    /// scoring and not about two draws. Counts in `u64` and finishes through
+    /// `psr_and_ler`, same as the packed scorer, so the two cannot disagree on
+    /// a zero-acceptance sample or on a shot count past `i32::MAX`.
+    #[cfg(test)]
+    pub fn approximate_psr_ler_reference(&self, sample: &crate::ler::ShotSample) -> (f64, f64) {
+        let error_generators = self.get_generator_errors();
+        let nshots = sample.nshots;
+
+        let mut accepted_errors: u64 = 0;
+        let mut accepted_logical_errors: u64 = 0;
+        for shot in 0..nshots {
+            let lo = sample.offsets[shot] as usize;
+            let hi = sample.offsets[shot + 1] as usize;
+            if lo == hi {
+                continue;
             }
-        });
-        let accepted_errors: Vec<_> = (0..rayon::current_num_threads())
-            .map(|_| Mutex::new(0))
-            .collect();
-        let accepted_logical_errors: Vec<_> = (0..rayon::current_num_threads())
-            .map(|_| Mutex::new(0))
-            .collect();
-
-        let cumulants = self.logical_cumulants.clone();
-        let measured_cumulants = self.post_selected_cumulants.clone();
-
-        let relevant_indices_len = reverse_bins_buckets
-            .iter()
-            .map(|b| b.lock().unwrap().len())
-            .sum::<usize>();
-        reverse_bins_buckets.into_par_iter().for_each(|bins| {
-            let mut loc_a_e = 0;
-            let mut loc_a_l_e = 0;
-            for bin in bins.lock().unwrap().iter() {
-                let mut error = SparsePauli::new();
-                for index in bin {
-                    error.mult_inplace(&error_generators[*index].0);
-                }
-                if error.paulis.is_empty() {
-                    continue;
-                }
-                if measured_cumulants.covered_parity_any(&error) {
-                    continue;
-                }
-                loc_a_e += 1;
-                if !cumulants.covered_parity_any(&error) {
-                    continue;
-                }
-                loc_a_l_e += 1;
+            let mut error = SparsePauli::new();
+            for index in &sample.indices[lo..hi] {
+                error.mult_inplace(&error_generators[*index as usize].0);
             }
-            *accepted_errors[rayon::current_thread_index().unwrap_or_default()]
-                .lock()
-                .unwrap() += loc_a_e;
-            *accepted_logical_errors[rayon::current_thread_index().unwrap_or_default()]
-                .lock()
-                .unwrap() += loc_a_l_e;
-        });
-        let accepted_errors: i32 = accepted_errors
-            .into_iter()
-            .map(|m| *m.lock().unwrap())
-            .sum::<i32>()
-            + (nshots as i32 - relevant_indices_len as i32);
-        let accepted_logical_errors: i32 = accepted_logical_errors
-            .into_iter()
-            .map(|m| *m.lock().unwrap())
-            .sum();
+            if error.paulis.is_empty() {
+                continue;
+            }
+            if self.post_selected_cumulants.covered_parity_any(&error) {
+                continue;
+            }
+            accepted_errors += 1;
+            if !self.logical_cumulants.covered_parity_any(&error) {
+                continue;
+            }
+            accepted_logical_errors += 1;
+        }
+        let accepted_errors = accepted_errors + (nshots - sample.nonempty) as u64;
         psr_and_ler(accepted_errors, accepted_logical_errors, nshots)
+    }
+
+    /// One draw, scored both ways. The parity test uses this so the reference
+    /// cannot silently compare a second sample.
+    #[cfg(test)]
+    pub fn ler_scores_of_one_sample(
+        &self,
+        nshots: usize,
+        seed: Option<u64>,
+    ) -> ((f64, f64), (f64, f64)) {
+        let error_generators = self.get_generator_errors();
+        let sample = crate::ler::sample_shots(&error_generators, nshots, seed);
+        (
+            self.psr_ler_from_sample(&error_generators, &sample),
+            self.approximate_psr_ler_reference(&sample),
+        )
     }
 }
 
@@ -289,7 +295,11 @@ impl<'a> Coverage<'a> {
 /// small for the noise level. It ranks last at 1, so a candidate without an
 /// estimate is never preferred over one with an estimate; NaN would compare
 /// false against every other candidate.
-fn psr_and_ler(accepted: i32, accepted_logical: i32, nshots: usize) -> (f64, f64) {
+///
+/// Counts are `u64`. The previous `i32` counters overflowed once a search asked
+/// for more than `2^31` shots, and the packed scorer counts in `u64` for that
+/// reason; narrowing here would put the overflow back.
+fn psr_and_ler(accepted: u64, accepted_logical: u64, nshots: usize) -> (f64, f64) {
     if accepted == 0 {
         return (0.0, 1.0);
     }
@@ -311,5 +321,13 @@ mod psr_and_ler_tests {
     #[test]
     fn accepted_shots_give_the_ratios() {
         assert_eq!(psr_and_ler(50, 5, 100), (0.5, 0.1));
+    }
+
+    #[test]
+    fn counts_above_i32_max_stay_exact() {
+        let n = (i32::MAX as u64) + 1;
+        let (psr, ler) = psr_and_ler(n, n / 4, n as usize);
+        assert_eq!(psr, 1.0);
+        assert_eq!(ler, 0.25);
     }
 }
