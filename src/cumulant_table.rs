@@ -229,6 +229,12 @@ impl CumulantTable {
         acc.iter().any(|w| *w != 0)
     }
 
+    /// XOR contribution of a single `(wire, pauli)` to word `word` of the parity
+    /// accumulator used by `covered_parity_any`.
+    pub fn covered_parity_word(&self, wire: &Wire, xe: bool, ze: bool, word: usize) -> u64 {
+        self.parity_word_at(self.column_of(wire), xe, ze, word)
+    }
+
     /// OR-combine the per-row anticommutation bits of `error` across its
     /// wires: one bool per row, true when any wire of the error anticommutes
     /// with that row.
