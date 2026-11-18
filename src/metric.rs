@@ -15,8 +15,8 @@ use pyo3::prelude::*;
 #[derive(Debug, Clone)]
 pub enum Metric {
     /// Monte Carlo logical error rate: `(nshots, seed)`. The same seed is
-    /// reused for every evaluation, so the estimate reproduces exactly; `None`
-    /// draws a fresh seed per evaluation.
+    /// reused for every evaluation, so on a given build the estimate reproduces
+    /// exactly. `None` draws a fresh seed per evaluation.
     LogicalErrorRate(usize, Option<u64>),
     Gamma,
     BalancedGamma,

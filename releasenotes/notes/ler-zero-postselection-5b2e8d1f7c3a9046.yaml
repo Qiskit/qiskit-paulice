@@ -1,0 +1,10 @@
+---
+fixes:
+  - |
+    With ``cost="LER"``, a candidate check under which post-selection accepted none of the
+    sampled shots was scored NaN, so how it ranked against the other candidates depended on
+    the search method, and the reported ``cost`` of a
+    :class:`~qiskit_paulice.checked_circuit.CheckedCircuit` could be ``nan``. Its logical
+    error rate cannot be estimated from such a sample, usually because ``cost_nshots`` is
+    too small for the noise level, so it is now ranked last, at the worst logical error
+    rate, 1.

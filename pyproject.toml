@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "qiskit-paulice"
-version = "0.2.1"
+version = "0.3"
 readme = "README.md"
 description = "A library for implementing spacetime coherent Pauli checks"
 license = {file = "LICENSE.txt"}
@@ -56,13 +56,13 @@ nbtest = [
     "nbmake>=1.5.0",
 ]
 style = [
-    "ruff==0.16.7",
+    "ruff==0.17.3",
     "nbqa>=1.8.5",
 ]
 lint = [
     "qiskit-paulice[style]",
-    "mypy==2.3.1",
-    "pylint==4.0.5",
+    "mypy==2.4.1",
+    "pylint==4.1.3",
     "reno>=4.1",
     "toml>=0.9.6",
 ]

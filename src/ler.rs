@@ -44,28 +44,32 @@ const WORD: usize = 64;
 /// Draws which of `nshots` shots one error generator fires in, ascending.
 ///
 /// The count comes from a tabulated `Poisson(lambda)` and the positions from
-/// rejection sampling without replacement, so `lambda` well below `nshots` is
-/// assumed -- it is, since `proba_from_rate` is bounded by 1/2. The count is
-/// capped at `nshots`, since there are only that many distinct positions to
-/// draw and a larger count would never leave the loop.
+/// rejection sampling without replacement. `proba_from_rate` is at most 1/2, so
+/// `lambda` is at most `nshots / 2`. With the rates that actually occur, of
+/// order 1e-3, it sits far below that. The count is capped at `nshots`, since
+/// there are only that many distinct positions to draw and a larger count would
+/// never leave the loop.
 ///
-/// Every operation here is chosen so that a seeded sample is the same on every
-/// platform and at every thread count, which is why neither `StdRng` nor
-/// `rand_distr` is used:
+/// Every operation here is chosen so that a seeded sample is the same at every
+/// thread count and in every process of one build, which is why neither
+/// `StdRng` nor `rand_distr` is used:
 ///
 ///   - The stream is Philox, keyed on `(seed, index)`, so generator `index` can
 ///     be drawn on any thread without replaying anything. `StdRng` is a
 ///     stream cipher, so its n'th output is only reachable by generating the
 ///     first n.
 ///   - The count is a binary search in a precomputed CDF table, so the draw
-///     calls no transcendental. Every O(1) Poisson sampler for large lambda
-///     needs `log` of a random uniform and a log-gamma of a random count, and
-///     two libm implementations need not agree on the last ulp of either.
+///     itself calls no transcendental. Every O(1) Poisson sampler for large
+///     lambda needs `log` of a random uniform and a log-gamma of a random
+///     count, and two libm implementations need not agree on the last ulp of
+///     either.
 ///   - The positions come from a multiply-shift reduction of a 64-bit word,
 ///     which is integer-only.
 ///
-/// So the sample is bit-identical across platforms by construction rather than
-/// statistically equivalent, which is what keeps exact-cost tests usable.
+/// The table's input is outside that class: `lambda` is `nshots` times
+/// `proba_from_rate`, which calls `exp`, and the rate itself comes from `ln`.
+/// One ulp there selects a different table. On a given build the sample is
+/// bit-identical, which is what keeps exact-cost tests usable.
 ///
 /// Draws in deficit-sized batches and dedups instead of testing membership one
 /// draw at a time, which consumes the randomness identically: the i'th
@@ -110,19 +114,18 @@ pub struct ShotSample {
     pub nonempty: usize,
 }
 
-/// Draws the sample. With `seed = Some(_)` the result is fully determined by
-/// the seed, including which slot of a shot each generator lands in, since the
-/// transpose below runs in generator order.
+/// Draws the sample. With `seed = Some(_)` the result on a given build is fully
+/// determined by the seed, including which slot of a shot each generator lands
+/// in, since the transpose below runs in generator order.
 ///
 /// `seed = None` draws one random base seed for the whole call, from an
 /// OS-seeded generator, and keys every generator's stream on it. The unseeded
 /// sample is therefore different on every call but still independent of how
 /// rayon splits the work, and there is one draw path to keep bit-exact.
 pub fn sample_shots(generators: &[NoiseGenerator], nshots: usize, seed: Option<u64>) -> ShotSample {
-    // One table per distinct lambda, shared by every generator that has it.
-    // `lambda = nshots * proba_from_rate(rate)` carries no candidate-dependent
-    // term, so for a uniform noise model this is two tables of a few hundred
-    // entries however many generators there are.
+    // One table per distinct lambda, shared by the generators in this call
+    // that have it. A uniform model is a handful of tables. A per-edge model
+    // is one per distinct rate.
     let tables = PoissonTables::build(&rates_of(generators), nshots);
     draw_shots(&tables, nshots, resolve_seed(seed))
 }
@@ -380,13 +383,12 @@ impl LerJob {
     /// Turns the counts into `(post-selection acceptance, logical error rate)`.
     ///
     /// Shots in which nothing fired carry an identity error, which
-    /// post-selection accepts; they are counted here rather than scored.
+    /// post-selection accepts; they are counted here rather than scored. A
+    /// sample that accepts nothing ranks last, the same rule as
+    /// `coverage::psr_and_ler`.
     pub fn finish(&self, counts: ShotCounts, nonempty: usize) -> (f64, f64) {
         let accepted = counts.accepted + (self.nshots - nonempty) as u64;
-        (
-            accepted as f64 / self.nshots as f64,
-            counts.logical as f64 / accepted as f64,
-        )
+        crate::coverage::psr_and_ler(accepted, counts.logical, self.nshots)
     }
 }
 
@@ -826,8 +828,7 @@ mod tests {
             coverage.set_logical_cumulants(&[], &measured);
 
             for seed in [1u64, 12345] {
-                let packed = coverage.approximate_psr_ler(4096, Some(seed));
-                let reference = coverage.approximate_psr_ler_reference(4096, Some(seed));
+                let (packed, reference) = coverage.ler_scores_of_one_sample(4096, Some(seed));
                 assert_eq!(
                     packed.0.to_bits(),
                     reference.0.to_bits(),
@@ -842,6 +843,9 @@ mod tests {
                     packed.1,
                     reference.1
                 );
+                let through_the_api = coverage.approximate_psr_ler(4096, Some(seed));
+                assert_eq!(through_the_api.0.to_bits(), packed.0.to_bits());
+                assert_eq!(through_the_api.1.to_bits(), packed.1.to_bits());
             }
         }
     }

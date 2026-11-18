@@ -12,12 +12,12 @@
 
 pub mod check_decoder;
 pub mod check_evaluator;
-pub mod decoding;
 pub mod check_group;
 pub mod check_picker;
 pub mod circuit_building;
 pub mod coverage;
 pub mod cumulant_table;
+pub mod decoding;
 pub mod engine;
 pub mod generator_table;
 pub mod ler;

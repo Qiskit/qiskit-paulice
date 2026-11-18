@@ -54,11 +54,14 @@ def genetic_algorithm(
         n_stagnant: Number of generations without improvement before stopping
         pop_size: Population size
         seed: Random seed for reproducibility
+
+    Returns one circuit *builder* per variant rather than one circuit; the
+    caller reads the variant it wants. See ``_DeferredCircuits``.
     """
     if seed is not None:
         np.random.seed(seed)
     
-    circuits = [check_picker.get_circuit()]
+    circuits = [check_picker.get_circuit_deferred()]
     costs = [check_picker.get_current_energy()]
     committed_targets = []
     for idx, qubit in enumerate(targets):
@@ -74,7 +77,7 @@ def genetic_algorithm(
         )
 
         committed_targets.append(qubit)
-        circuits.append(check_picker.get_circuit())
+        circuits.append(check_picker.get_circuit_deferred())
         costs.append(check_picker.get_current_energy())
     return (circuits, *check_picker.get_check_data(), costs, committed_targets)
 
@@ -156,10 +159,13 @@ def windowed_genetic_algorithm(
     pop_size: int = 20,
     seed=None,
 ):
+    """Returns one circuit *builder* per variant rather than one circuit; the
+    caller reads the variant it wants. See ``_DeferredCircuits``.
+    """
     if seed is not None:
         np.random.seed(seed)
 
-    circuits = [check_picker.get_circuit()]
+    circuits = [check_picker.get_circuit_deferred()]
     costs = [check_picker.get_current_energy()]
     committed_targets = []
     for idx, qubit in enumerate(targets):
@@ -195,6 +201,6 @@ def windowed_genetic_algorithm(
         check_picker = best_check
 
         committed_targets.append(qubit)
-        circuits.append(check_picker.get_circuit())
+        circuits.append(check_picker.get_circuit_deferred())
         costs.append(check_picker.get_current_energy())
     return (circuits, *check_picker.get_check_data(), costs, committed_targets)

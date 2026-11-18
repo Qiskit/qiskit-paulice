@@ -19,21 +19,34 @@
 //! known ahead of time, so they cannot be precomputed, and two libm
 //! implementations need not agree on the last ulp of either. A seeded sample
 //! drawn that way is statistically correct everywhere and reproducible only on
-//! the platform it was drawn on.
+//! the platform it was drawn on. The tabulated draw below removes that
+//! dependence from the sampling step. It remains in the construction of
+//! `lambda`, as the next paragraph describes.
 //!
 //! Inverting a tabulated CDF instead moves every hard function into building
-//! the table and leaves the draw as a binary search over `f64` comparisons. It
-//! is viable here because of two facts about how rates enter:
+//! the table and leaves the draw as a binary search over `f64` comparisons.
+//! Given the same table, that search cannot disagree between platforms. The
+//! table is built from `lambda = nshots * proba_from_rate(rate)`, and both
+//! `proba_from_rate` and the noise model's rates go through `exp` or `ln`,
+//! which IEEE-754 does not pin bit for bit. Deduplication is on
+//! `lambda.to_bits()`, so one ulp of `lambda` builds a different table. A
+//! seeded sample therefore repeats on a given build, not across libm
+//! implementations.
+//!
+//! The table is viable here because of how rates enter:
 //!
 //!   - `UniformDepolarizing` and `Readout` each compute one rate and emit it
-//!     for every generator they produce, so a typical model has a handful of
-//!     distinct lambdas rather than one per generator. They are deduplicated
-//!     below.
-//!   - `lambda = nshots * proba_from_rate(rate)` holds no candidate-dependent
-//!     term, so it is fixed for an entire search.
+//!     for every generator they produce, so those models have a handful of
+//!     distinct lambdas. A model with a distinct rate per edge has one lambda
+//!     per distinct rate, and the generators that share that rate share the
+//!     table. Either way they are deduplicated below.
+//!   - `lambda` holds no candidate-dependent term. Each evaluation still
+//!     builds its own tables. Sharing one cache across the parallel scoring
+//!     loop made a search with thousands of distinct rates slower.
 //!
 //! A table spans about 20 standard deviations, so it is O(sqrt(lambda)) and
-//! tiny: 797 entries at lambda 1500, under 7 KB.
+//! small for a uniform model: 797 entries at lambda 1500, under 7 KB. A
+//! per-edge model is one table per distinct rate.
 
 /// The inverse CDF of `Poisson(lambda)` over a truncated window.
 #[derive(Clone, Debug)]
@@ -125,8 +138,9 @@ impl PoissonTable {
 
     /// The count for a uniform `u` in `[0, 1)`.
     ///
-    /// Comparisons only, which is the entire point: nothing here can round
-    /// differently from one platform to another.
+    /// Comparisons only, so given this table the count is the same on every
+    /// platform. The table itself depends on `lambda`, which has already been
+    /// through `exp` and `ln`. See the module docs.
     #[inline]
     pub fn sample(&self, u: f64) -> u32 {
         debug_assert!((0.0..1.0).contains(&u), "u must be in [0,1), got {u}");
