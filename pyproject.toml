@@ -70,6 +70,7 @@ notebook-dependencies = [
     "matplotlib",
     "qiskit-aer>=0.17.1",
     "qiskit-ibm-runtime>=0.40",
+    "qiskit-mitigation>=0.1.0",
     "rustworkx[graphviz]>=0.16",
     "ipywidgets",
     "pylatexenc",

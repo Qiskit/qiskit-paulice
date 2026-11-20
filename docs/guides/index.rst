@@ -6,3 +6,4 @@ Qiskit Paulice Guides
 
    Quickstart guide <quickstart.ipynb>
    Doping Clifford circuits <doping.ipynb>
+   Combining error detection with error cancellation <error_detection_with_error_cancellation.ipynb>
