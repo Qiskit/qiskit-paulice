@@ -6,3 +6,4 @@ Qiskit Paulice Guides
 
    Quickstart guide <quickstart.ipynb>
    Doping Clifford circuits <doping.ipynb>
+   Accelerating candidate scoring with a scoring engine <hpc_acceleration>
