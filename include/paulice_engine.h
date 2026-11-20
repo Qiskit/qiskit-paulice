@@ -60,6 +60,12 @@ extern "C" {
 /// Noise-model block kinds the device path understands. Every generator inside
 /// one block carries the same rate, which is what lets the device reproduce the
 /// host's summation order exactly -- see `PauliceEngine::gamma_batch`.
+///
+/// A depolarizing block has 15 generators per 2-qubit gate. A readout block has
+/// one generator per qubit, a flip of that qubit's readout at the end of the
+/// circuit. It flips every row whose seed has the qubit's bit set, so it counts
+/// toward gamma when no post-selected seed and at least one logical seed of the
+/// candidate has that bit set. No propagation is involved.
 #define PAULICE_NOISE_DEPOLARIZING 0
 #define PAULICE_NOISE_READOUT 1
 
@@ -91,10 +97,6 @@ typedef struct PauliceGammaBatch {
     const int32_t *logical_row_offset;
     /// Words per row seed mask, i.e. ceil(nqubits / 64).
     int32_t row_words;
-
-    /// Column of each qubit's readout wire, or -1 when that wire is not
-    /// recorded (its qubit's last gate is single-qubit). `nqubits` per candidate.
-    const int32_t *readout_column;
 
     /// Noise-model blocks in emission order, shared by every candidate.
     const PauliceNoiseBlock *blocks;
