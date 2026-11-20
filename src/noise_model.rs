@@ -618,6 +618,9 @@ impl NoiseModelLike for Idling {
     }
 }
 
+/// A noise model that flips each qubit's readout with probability `error_rate`: one X
+/// generator on each qubit's readout wire (see `Wire::Readout`), at rate
+/// `-ln(1 - 2 * error_rate) / 2`.
 #[derive(Clone, Debug)]
 pub struct Readout {
     error_rate: f64,
@@ -632,24 +635,6 @@ impl Readout {
     pub(crate) fn rate(&self) -> f64 {
         -1. / 2. * (1. - 2. * self.error_rate).ln()
     }
-
-    pub(crate) fn generators_for_last_wires(&self, last_wires: &[Wire]) -> Vec<NoiseGenerator> {
-        let rate = self.rate();
-        let mut generators = Vec::with_capacity(last_wires.len());
-        for wire in last_wires {
-            let mut pauli = SparsePauli::new();
-            pauli.update(wire.clone(), 1);
-            generators.push((pauli, rate));
-        }
-        generators
-    }
-
-    pub(crate) fn emit_for_last_wires(&self, last_wires: &[Wire], sink: &mut dyn GeneratorSink) {
-        let rate = self.rate();
-        for wire in last_wires {
-            sink.push(&[(wire.clone(), 1)], rate);
-        }
-    }
 }
 
 impl Default for Readout {
@@ -659,14 +644,33 @@ impl Default for Readout {
 }
 
 impl NoiseModelLike for Readout {
-    /// One single-wire generator on each qubit's last wire.
+    /// One single-wire generator on each qubit's readout wire.
     fn generator_hint(&self, circuit: &CliffordCircuit) -> (usize, usize) {
         (circuit.nqbits, circuit.nqbits)
     }
 
     fn get_generators(&self, circuit: &CliffordCircuit) -> (Vec<NoiseGenerator>, CliffordCircuit) {
-        let last = super::utils::last_wires(circuit);
-        (self.generators_for_last_wires(&last), circuit.clone())
+        let rate = self.rate();
+        let generators = (0..circuit.nqbits)
+            .map(|qbit| {
+                let mut pauli = SparsePauli::new();
+                pauli.update(Wire::Readout(qbit), 1);
+                (pauli, rate)
+            })
+            .collect();
+        (generators, circuit.clone())
+    }
+
+    fn emit_generators(
+        &self,
+        circuit: &CliffordCircuit,
+        sink: &mut dyn GeneratorSink,
+    ) -> Option<CliffordCircuit> {
+        let rate = self.rate();
+        for qbit in 0..circuit.nqbits {
+            sink.push(&[(Wire::Readout(qbit), 1)], rate);
+        }
+        None
     }
 }
 /// A wrapper enum to simplify interfacing with Python.
@@ -772,7 +776,8 @@ impl NoiseModel {
     /// Returns (generators, circuit). Each generator is a (components, rate) pair whose
     /// components ((gate_index, slot), pauli) place single-qubit Paulis (1=X, 2=Y, 3=Z) on
     /// the output wire `slot` of the gate at `gate_index`; an index of -1 denotes the input
-    /// wire of qubit `slot`. Coordinates reference the *returned* gate list, which layered
+    /// wire of qubit `slot`, and an index of -2 its readout wire, at the end of the circuit.
+    /// Coordinates reference the *returned* gate list, which layered
     /// models re-layer; feed it to the next model when chaining, as `Coverage` does.
     #[allow(clippy::type_complexity)]
     pub fn resolve_generators(
@@ -794,6 +799,7 @@ impl NoiseModel {
                     .into_iter()
                     .map(|(wire, p)| match wire {
                         Wire::Input(q) => ((-1i64, q), p),
+                        Wire::Readout(q) => ((-2i64, q), p),
                         Wire::GateWire(g, s) => ((g as i64, s), p),
                     })
                     .collect();

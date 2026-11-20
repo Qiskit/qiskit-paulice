@@ -63,16 +63,17 @@ fn _memo_key(check: &SparsePauli) -> Vec<(PyWire, u8)> {
 }
 
 fn _to_rust_wire(py_wire: PyWire) -> Wire {
-    if py_wire.0 == -1 {
-        Wire::Input(py_wire.1)
-    } else {
-        Wire::GateWire(py_wire.0 as usize, py_wire.1)
+    match py_wire.0 {
+        -1 => Wire::Input(py_wire.1),
+        -2 => Wire::Readout(py_wire.1),
+        gate => Wire::GateWire(gate as usize, py_wire.1),
     }
 }
 
 fn _to_py_wire(wire: Wire) -> PyWire {
     match wire {
         Wire::Input(q) => (-1, q),
+        Wire::Readout(q) => (-2, q),
         Wire::GateWire(gi, qi) => (gi as i32, qi),
     }
 }
