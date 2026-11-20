@@ -631,6 +631,39 @@ class TestAddPauliChecksPermutations(unittest.TestCase):
         _assert_variant_progression(self, result, expected_targets=[0])
         self.assertIsInstance(result[-1].cost, float)
 
+    def test_readout_noise_counts_on_qubits_ending_in_single_qubit_gates(self):
+        """Each measured qubit's readout error is costed, whatever gates end its line."""
+        noise = NoiseModel(readout_noise=2e-2)
+        for trailing in (False, True):
+            with self.subTest(trailing=trailing):
+                qc = QuantumCircuit(3)
+                qc.h(0)
+                qc.cx(0, 1)
+                qc.cx(1, 2)
+                if trailing:
+                    qc.s(0)
+                    qc.h(2)
+                qc.measure_all()
+                bare = add_pauli_checks(qc, [0], noise, seed=0)[0]
+                self.assertEqual(len(bare.check_qubits), 0)
+                # Without checks, gamma is 1 / (1 - 2p) per measured qubit.
+                self.assertAlmostEqual(bare.cost, (1 - 2 * 2e-2) ** -3)
+
+    def test_readout_noise_counts_wherever_a_protected_stabilizer_acts(self):
+        """In stabilizer mode a readout error counts on every qubit a protected stabilizer acts on."""
+        noise = NoiseModel(readout_noise=2e-2)
+        ghz = QuantumCircuit(3)
+        ghz.h(0)
+        ghz.cx(0, 1)
+        ghz.cx(1, 2)
+        # Each stabilizer of the GHZ state, and how many qubits the protected ones act on.
+        for stabilizers, support in ((["XXX"], 3), (["IZZ"], 2), (["ZZI", "IZZ"], 3), ("all", 3)):
+            with self.subTest(stabilizers=stabilizers):
+                bare = add_pauli_checks(ghz, [0], noise, stabilizers=stabilizers, seed=0)[0]
+                self.assertEqual(len(bare.check_qubits), 0)
+                # Without checks, gamma is 1 / (1 - 2p) per qubit read out.
+                self.assertAlmostEqual(bare.cost, (1 - 2 * 2e-2) ** -support)
+
     def test_custom_register_names(self):
         """Custom check_qreg_name / check_creg_name propagate to the output circuit."""
         result = add_pauli_checks(
