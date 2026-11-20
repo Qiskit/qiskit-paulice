@@ -203,6 +203,13 @@ impl CumulantTable {
         a
     }
 
+    /// How many rows anticommute with the Pauli `(xe, ze)` on `column`'s wire.
+    pub fn anticommuting_rows_at(&self, column: i32, xe: bool, ze: bool) -> u32 {
+        (0..self.nwords)
+            .map(|k| self.parity_word_at(column, xe, ze, k).count_ones())
+            .sum()
+    }
+
     /// XOR-combine the per-row anticommutation bits of `error` across its
     /// wires and report whether any row ends up odd, i.e. whether some row
     /// anticommutes with `error` as a whole.

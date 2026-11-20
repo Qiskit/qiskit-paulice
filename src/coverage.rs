@@ -10,9 +10,9 @@
 // copyright notice, and modified files need to carry a notice indicating
 // that they have been altered from the originals.
 
-use super::cumulant_table::CumulantTable;
+use super::cumulant_table::{CumulantTable, pauli_xz_bits};
 use super::generator_table::GeneratorTable;
-use super::noise_generators::build_noise_generators;
+use super::noise_generators::build_noise_generators_with;
 use super::noise_model::{NoiseGenerator, UNoiseModel};
 use super::pauli::Pauli;
 use super::pauli_propagator::{Direction, PauliPropagator};
@@ -24,7 +24,7 @@ use rand::distr::Distribution;
 use rand::rngs::ThreadRng;
 use rand_distr::Poisson;
 use rayon::prelude::*;
-use rustiq_core::structures::CliffordCircuit;
+use rustiq_core::structures::{CliffordCircuit, PauliSet};
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Mutex;
@@ -44,6 +44,10 @@ pub struct Coverage<'a> {
     noise_models: &'a [UNoiseModel],
     logical_cumulants: CumulantTable,
     post_selected_cumulants: CumulantTable,
+    /// `is_check[q]`: qubit `q` is a check ancilla, measured in the Z basis.
+    is_check: Vec<bool>,
+    /// Whether the logical operators include forward-propagated stabilizers.
+    protects_stabilizers: bool,
 }
 
 impl<'a> Coverage<'a> {
@@ -53,6 +57,8 @@ impl<'a> Coverage<'a> {
             noise_models,
             logical_cumulants: CumulantTable::default(),
             post_selected_cumulants: CumulantTable::default(),
+            is_check: vec![false; circuit.nqbits],
+            protects_stabilizers: false,
         }
     }
 
@@ -65,7 +71,49 @@ impl<'a> Coverage<'a> {
     }
 
     fn get_generator_errors(&self) -> Vec<NoiseGenerator> {
-        build_noise_generators(self.circuit, self.noise_models)
+        build_noise_generators_with(self.circuit, self.noise_models, &|circuit| {
+            self.readout_terms(circuit)
+        })
+    }
+
+    /// Where each qubit's readout error goes: one `(wire, pauli)` per qubit of
+    /// `circuit`, on the wire `utils::readout_terms` picks.
+    ///
+    /// A qubit measured in the Z basis -- a measured qubit or a check ancilla
+    /// -- suffers an X before its measurement, which is what
+    /// `utils::readout_terms` returns. A protected stabilizer is instead read
+    /// out by measuring each qubit it acts on in the basis it has there, so a
+    /// readout error on any such qubit flips its outcome. On every other
+    /// qubit the error is therefore the Pauli that anticommutes with the most
+    /// protected stabilizers on that wire; ties keep `utils::readout_terms`'s
+    /// Pauli and then prefer X over Y over Z. A qubit no protected stabilizer
+    /// acts on keeps `utils::readout_terms`'s Pauli, which counts for nothing.
+    ///
+    /// Must be called after the cumulants are set.
+    fn readout_terms(&self, circuit: &CliffordCircuit) -> Vec<(Wire, u8)> {
+        let mut terms = crate::utils::readout_terms(circuit);
+        if !self.protects_stabilizers {
+            return terms;
+        }
+        for (qbit, (wire, pauli)) in terms.iter_mut().enumerate() {
+            if self.is_check.get(qbit).copied().unwrap_or(false) {
+                continue;
+            }
+            let column = self.logical_cumulants.column_of(wire);
+            let flipped = |p: u8| {
+                let (xe, ze) = pauli_xz_bits(p);
+                self.logical_cumulants.anticommuting_rows_at(column, xe, ze)
+            };
+            let mut best = flipped(*pauli);
+            for candidate in 1..=3u8 {
+                let count = flipped(candidate);
+                if count > best {
+                    best = count;
+                    *pauli = candidate;
+                }
+            }
+        }
+        terms
     }
     /// Computes & stores the backcumulants of a collection of checks specified
     /// by some measured qubits and some virtual CZs gates
@@ -83,6 +131,9 @@ impl<'a> Coverage<'a> {
                 pauli
             })
             .collect();
+        for qbit in check_qubits {
+            self.is_check[*qbit] = true;
+        }
         self.post_selected_cumulants
             .extend(propagator.get_cumulant_table_from_paulis(
                 &as_paulis,
@@ -95,12 +146,25 @@ impl<'a> Coverage<'a> {
     /// or measured qubits (we will backpropagate Z operators for each of them)
     pub fn set_logical_cumulants(&mut self, stabilizers: &[Pauli], measured_qubits: &[usize]) {
         let propagator = PauliPropagator::new(self.circuit);
-        self.logical_cumulants
-            .extend(propagator.get_cumulant_table_from_paulis(
-                stabilizers,
-                Direction::Forward,
-                true,
-            ));
+        let mut forward =
+            propagator.get_cumulant_table_from_paulis(stabilizers, Direction::Forward, true);
+        if !stabilizers.is_empty() {
+            self.protects_stabilizers = true;
+            // The forward walk records the wire after each 2-qubit gate. An
+            // input wire holds the stabilizer itself, which is what an error
+            // ahead of a qubit's first 2-qubit gate has to be compared with.
+            let nqbits = self.circuit.nqbits;
+            let mut inputs = PauliSet::new_empty(nqbits, stabilizers.len());
+            for (row, pauli) in stabilizers.iter().enumerate() {
+                for qbit in 0..nqbits {
+                    inputs.set_entry(row, qbit, pauli[qbit], pauli[qbit + nqbits]);
+                }
+            }
+            for qbit in 0..nqbits {
+                forward.record(Wire::Input(qbit), &inputs, qbit, nqbits);
+            }
+        }
+        self.logical_cumulants.extend(forward);
         let as_paulis: Vec<_> = measured_qubits
             .iter()
             .map(|q| {
@@ -192,8 +256,10 @@ impl<'a> Coverage<'a> {
     }
 
     pub fn gamma_apx(&self) -> f64 {
-        GeneratorTable::build(self.circuit, self.noise_models)
-            .gamma_score(&self.post_selected_cumulants, &self.logical_cumulants)
+        GeneratorTable::build_with(self.circuit, self.noise_models, &|circuit| {
+            self.readout_terms(circuit)
+        })
+        .gamma_score(&self.post_selected_cumulants, &self.logical_cumulants)
     }
 
     /// Monte Carlo estimate of `(post-selection acceptance, logical error rate)`.
@@ -342,7 +408,8 @@ mod psr_and_ler_tests {
 
         let error_rate = 0.02;
         let models = vec![UNoiseModel::Readout(Readout::new(error_rate))];
-        let trailing: [fn(usize) -> CliffordGate; 5] = [
+        type Gate = fn(usize) -> CliffordGate;
+        let trailing: [Gate; 5] = [
             CliffordGate::H,
             CliffordGate::S,
             CliffordGate::Sd,
@@ -376,5 +443,116 @@ mod psr_and_ler_tests {
                 }
             }
         }
+    }
+
+    /// A protected stabilizer is read out in its own basis, so a readout error
+    /// on any qubit it acts on counts toward gamma, whichever Pauli it has
+    /// there. The expected count is the number of qubits some protected
+    /// stabilizer acts on at the end of the circuit, found by propagating the
+    /// stabilizers through every gate.
+    #[test]
+    fn readout_counts_wherever_a_protected_stabilizer_acts() {
+        use super::super::noise_model::{Readout, UNoiseModel};
+        use super::Coverage;
+        use rustiq_core::structures::{CliffordCircuit, CliffordGate, PauliLike, PauliSet};
+
+        let error_rate = 0.02;
+        let models = vec![UNoiseModel::Readout(Readout::new(error_rate))];
+        type Gate = fn(usize) -> CliffordGate;
+        let trailing: [Option<Gate>; 4] = [
+            None,
+            Some(CliffordGate::H),
+            Some(CliffordGate::S),
+            Some(CliffordGate::SqrtX),
+        ];
+        // A GHZ state on qubits 0-2, stabilized by XXX, ZZI and IZZ. Qubit 3
+        // has no 2-qubit gate; its H turns the input Z into an X.
+        let nqbits = 4;
+        let input_z = |q: usize| {
+            let mut pauli = vec![false; 2 * nqbits];
+            pauli[nqbits + q] = true;
+            pauli
+        };
+        let protected: Vec<Vec<usize>> = vec![vec![0], vec![1], vec![2], vec![3], vec![0, 1, 2, 3]];
+        for last in trailing {
+            let mut circuit = CliffordCircuit::new(nqbits);
+            circuit.gates.push(CliffordGate::H(0));
+            circuit.gates.push(CliffordGate::CNOT(0, 1));
+            circuit.gates.push(CliffordGate::CNOT(1, 2));
+            circuit.gates.push(CliffordGate::H(3));
+            if let Some(gate) = last {
+                for q in 0..nqbits {
+                    circuit.gates.push(gate(q));
+                }
+            }
+            for inputs in &protected {
+                let stabilizers: Vec<_> = inputs.iter().map(|q| input_z(*q)).collect();
+
+                let mut images = PauliSet::new_empty(nqbits, stabilizers.len());
+                for (row, pauli) in stabilizers.iter().enumerate() {
+                    for q in 0..nqbits {
+                        images.set_entry(row, q, pauli[q], pauli[q + nqbits]);
+                    }
+                }
+                for gate in &circuit.gates {
+                    images.conjugate_with_gate(gate);
+                }
+                let support = (0..nqbits)
+                    .filter(|q| {
+                        (0..stabilizers.len()).any(|row| {
+                            images.get_entry(*q, row) || images.get_entry(q + nqbits, row)
+                        })
+                    })
+                    .count();
+                assert!(support > 0);
+
+                let mut coverage = Coverage::new(&circuit, &models);
+                coverage.set_check_cumulants(&[], &[]);
+                coverage.set_logical_cumulants(&stabilizers, &[]);
+                let want = (1. - 2. * error_rate).powi(-(support as i32));
+                let got = coverage.gamma_apx();
+                assert!(
+                    ((got - want) / want).abs() < 1e-12,
+                    "inputs {inputs:?}, {:?}: gamma {got}, expected {want}",
+                    circuit.gates
+                );
+            }
+        }
+    }
+
+    /// With a check in place, readout errors on the payload still count
+    /// wherever the protected stabilizer acts, and the one on the check
+    /// ancilla, which is measured in the Z basis, is detected and does not.
+    #[test]
+    fn readout_on_a_check_ancilla_is_detected_in_stabilizer_mode() {
+        use super::super::noise_model::{Readout, UNoiseModel};
+        use super::Coverage;
+        use rustiq_core::structures::{CliffordCircuit, CliffordGate};
+
+        let error_rate = 0.02;
+        let models = vec![UNoiseModel::Readout(Readout::new(error_rate))];
+        // GHZ on qubits 0-2; qubit 3 measures the stabilizer Z0 Z1.
+        let nqbits = 4;
+        let mut circuit = CliffordCircuit::new(nqbits);
+        circuit.gates.push(CliffordGate::H(0));
+        circuit.gates.push(CliffordGate::CNOT(0, 1));
+        circuit.gates.push(CliffordGate::CNOT(1, 2));
+        circuit.gates.push(CliffordGate::H(3));
+        circuit.gates.push(CliffordGate::CZ(3, 0));
+        circuit.gates.push(CliffordGate::CZ(3, 1));
+        circuit.gates.push(CliffordGate::H(3));
+        // The input Z0 becomes XXX on the payload.
+        let mut xxx = vec![false; 2 * nqbits];
+        xxx[nqbits] = true;
+
+        let mut coverage = Coverage::new(&circuit, &models);
+        coverage.set_check_cumulants(&[3], &[vec![]]);
+        coverage.set_logical_cumulants(&[xxx], &[]);
+        let want = (1. - 2. * error_rate).powi(-3);
+        let got = coverage.gamma_apx();
+        assert!(
+            ((got - want) / want).abs() < 1e-12,
+            "gamma {got}, expected {want}"
+        );
     }
 }

@@ -7,3 +7,12 @@ fixes:
     toward checks that detect it. The readout error on every qubit is now counted,
     whichever gates end its line. Costs of circuits that end in single-qubit gates rise
     accordingly, and the checks picked for them can change.
+  - |
+    With ``stabilizers`` given, the cost counted ``readout_noise`` on a qubit only where
+    a protected stabilizer acts as ``Z`` or ``Y`` at the end of the circuit, as though
+    every qubit were measured in the ``Z`` basis. A stabilizer is read out by measuring
+    each qubit it acts on in the basis it has there, so the readout error on every such
+    qubit is now counted, including where the stabilizer acts as ``X`` and on qubits
+    with no two-qubit gate. The documentation of
+    :func:`~qiskit_paulice.add_pauli_checks`, which said that ``readout_noise`` never
+    counts toward the cost in this mode, is corrected.

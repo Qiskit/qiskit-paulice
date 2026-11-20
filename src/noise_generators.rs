@@ -67,15 +67,32 @@ impl GeneratorSink for SparseSink {
     }
 }
 
-/// Runs every noise model over the circuit, feeding `sink` in emission order.
-///
-/// Each model may rewrite the circuit (`LayeredNoiseModel` relayers it), and
-/// later models see the rewritten version -- which is why `Readout` places its
-/// generators on the current circuit rather than trusting the original one.
+/// Places each qubit's readout error on a circuit: one `(wire, pauli)` per
+/// qubit, in qubit order. `utils::readout_terms` is the placement for qubits
+/// measured in the Z basis; `Coverage` supplies its own when it protects
+/// stabilizers, which are read out in their own bases.
+pub type ReadoutPlacement<'a> = &'a dyn Fn(&CliffordCircuit) -> Vec<(Wire, u8)>;
+
+/// `emit_generators_with` for qubits measured in the Z basis.
 pub fn emit_generators(
     circuit: &CliffordCircuit,
     noise_models: &[UNoiseModel],
     sink: &mut dyn GeneratorSink,
+) {
+    emit_generators_with(circuit, noise_models, sink, &readout_terms);
+}
+
+/// Runs every noise model over the circuit, feeding `sink` in emission order.
+/// `place_readout` decides where the `Readout` model's generators go.
+///
+/// Each model may rewrite the circuit (`LayeredNoiseModel` relayers it), and
+/// later models see the rewritten version -- which is why `Readout` places its
+/// generators on the current circuit rather than trusting the original one.
+pub fn emit_generators_with(
+    circuit: &CliffordCircuit,
+    noise_models: &[UNoiseModel],
+    sink: &mut dyn GeneratorSink,
+    place_readout: ReadoutPlacement,
 ) {
     let (generators, terms) = noise_models
         .iter()
@@ -92,7 +109,7 @@ pub fn emit_generators(
                 UNoiseModel::Readout(m) => {
                     // Recompute on the *current* circuit: a prior model (e.g.
                     // LayeredNoiseModel) may have rewritten gate indices.
-                    m.emit_for_terms(&readout_terms(current), sink);
+                    m.emit_for_terms(&place_readout(current), sink);
                     None
                 }
                 _ => noise_model.emit_generators(current, sink),
@@ -104,14 +121,24 @@ pub fn emit_generators(
     }
 }
 
+/// `build_noise_generators_with` for qubits measured in the Z basis.
 pub fn build_noise_generators(
     circuit: &CliffordCircuit,
     noise_models: &[UNoiseModel],
 ) -> Vec<NoiseGenerator> {
+    build_noise_generators_with(circuit, noise_models, &readout_terms)
+}
+
+/// Every generator `emit_generators_with` emits, in emission order.
+pub fn build_noise_generators_with(
+    circuit: &CliffordCircuit,
+    noise_models: &[UNoiseModel],
+    place_readout: ReadoutPlacement,
+) -> Vec<NoiseGenerator> {
     let mut sink = SparseSink {
         generators: Vec::new(),
     };
-    emit_generators(circuit, noise_models, &mut sink);
+    emit_generators_with(circuit, noise_models, &mut sink, place_readout);
     sink.generators
 }
 

@@ -18,7 +18,7 @@
 //! per generator and scoring costs an array index per term.
 
 use super::cumulant_table::{CumulantTable, pauli_xz_bits};
-use super::noise_generators::{GeneratorSink, emit_generators};
+use super::noise_generators::{GeneratorSink, ReadoutPlacement, emit_generators_with};
 use super::noise_model::{NoiseGenerator, UNoiseModel};
 use super::wire::Wire;
 use rustiq_core::structures::CliffordCircuit;
@@ -74,10 +74,20 @@ impl GeneratorTable {
     /// generators, in the same order, as `from_sparse(&build_noise_generators(..))`
     /// -- the order matters, because the gamma sum is accumulated in it.
     pub fn build(circuit: &CliffordCircuit, noise_models: &[UNoiseModel]) -> Self {
+        Self::build_with(circuit, noise_models, &super::utils::readout_terms)
+    }
+
+    /// `build`, with the readout generators placed by `place_readout` (see
+    /// `noise_generators::ReadoutPlacement`).
+    pub fn build_with(
+        circuit: &CliffordCircuit,
+        noise_models: &[UNoiseModel],
+        place_readout: ReadoutPlacement,
+    ) -> Self {
         let mut sink = TableSink {
             table: Self::empty(circuit.nqbits),
         };
-        emit_generators(circuit, noise_models, &mut sink);
+        emit_generators_with(circuit, noise_models, &mut sink, place_readout);
         sink.table
     }
 

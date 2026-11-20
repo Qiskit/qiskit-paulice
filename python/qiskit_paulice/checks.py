@@ -138,9 +138,10 @@ def add_pauli_checks(
             acts on qubit ``0``; a sign is permitted and ignored. In
             ISA mode they must act as the identity on every qubit outside the payload. Each must
             stabilize the prepared state, i.e. propagate back through the circuit to a product of
-            ``Z``\ s (a ``ValueError`` is raised otherwise). Since no payload qubit is measured
-            in this mode, ``readout_noise`` only affects the check ancillas and so never counts
-            toward the cost.
+            ``Z``\ s (a ``ValueError`` is raised otherwise). ``readout_noise`` counts toward
+            the cost in this mode too: each protected stabilizer is taken to be read out by
+            measuring every qubit it acts on at the end of the circuit, in the basis it has
+            there, so a readout error on any of those qubits counts.
 
     Returns:
         A list of :class:`~qiskit_paulice.checked_circuit.CheckedCircuit` instances -- instances containing the bare circuit with
