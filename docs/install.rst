@@ -62,3 +62,16 @@ If you installed the notebook dependencies, you can get started by running the n
 
     cd docs/
     jupyter lab
+
+Optional: score candidate checks with an acceleration engine
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Candidate checks can be scored by a separately installed engine instead of on the CPU.
+Coheriq, which discovers and enables engines, is installed with qiskit-paulice, so only the
+engine package needs installing:
+
+.. code:: sh
+
+    pip install <engine-package>
+
+To enable the engine and see what it guarantees, read :doc:`the scoring engine guide <guides/hpc_acceleration>`.

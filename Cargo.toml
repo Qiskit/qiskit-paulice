@@ -5,7 +5,7 @@ edition = "2024"
 
 [lib]
 name = "_internal_r"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rustiq-core = "0.0.9"

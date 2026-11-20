@@ -64,7 +64,7 @@ impl<'a> Coverage<'a> {
         &self.logical_cumulants
     }
 
-    fn get_generator_errors(&self) -> Vec<NoiseGenerator> {
+    pub(crate) fn get_generator_errors(&self) -> Vec<NoiseGenerator> {
         build_noise_generators(self.circuit, self.noise_models)
     }
     /// Computes & stores the backcumulants of a collection of checks specified
@@ -215,28 +215,45 @@ impl<'a> Coverage<'a> {
     /// With `seed = None` a fresh base seed is drawn from an OS-seeded
     /// generator on every call, so the result varies from call to call.
     pub fn approximate_psr_ler(&self, nshots: usize, seed: Option<u64>) -> (f64, f64) {
-        let error_generators = self.get_generator_errors();
-        let sample = crate::ler::sample_shots(&error_generators, nshots, seed);
-        self.psr_ler_from_sample(&error_generators, &sample)
+        let job = self.prepare_psr_ler(nshots, seed);
+        let (counts, nonempty) = crate::ler::score_batch(std::slice::from_ref(&job))
+            .pop()
+            .expect("score_batch returns one result per job");
+        job.finish(counts, nonempty)
     }
 
-    fn psr_ler_from_sample(
-        &self,
-        error_generators: &[NoiseGenerator],
-        sample: &crate::ler::ShotSample,
-    ) -> (f64, f64) {
-        let tables = crate::ler::LerTables::pack(
+    /// Everything `approximate_psr_ler` does except scoring, so that a round
+    /// of candidates can be prepared in parallel and scored together with
+    /// `ler::score_batch`.
+    pub fn prepare_psr_ler(&self, nshots: usize, seed: Option<u64>) -> crate::ler::LerJob {
+        let error_generators = self.get_generator_errors();
+        crate::ler::LerJob::prepare(
+            self.pack_ler(&error_generators),
+            &error_generators,
+            nshots,
+            seed,
+        )
+    }
+
+    /// `prepare_psr_ler`, leaving the draw to the device when it would take
+    /// the job.
+    pub fn prepare_psr_ler_deferred(&self, nshots: usize, seed: Option<u64>) -> crate::ler::LerJob {
+        let error_generators = self.get_generator_errors();
+        crate::ler::LerJob::prepare_deferred(
+            self.pack_ler(&error_generators),
+            &error_generators,
+            nshots,
+            seed,
+        )
+    }
+
+    fn pack_ler(&self, error_generators: &[NoiseGenerator]) -> crate::ler::LerTables {
+        crate::ler::LerTables::pack(
             error_generators,
             &self.post_selected_cumulants,
             &self.logical_cumulants,
             self.circuit.nqbits,
-        );
-        let counts = crate::ler::score_shots(&tables, sample);
-
-        // Shots in which nothing fired carry an identity error, which
-        // post-selection accepts; they are counted here rather than scored.
-        let accepted = counts.accepted + (sample.nshots - sample.nonempty) as u64;
-        psr_and_ler(accepted, counts.logical, sample.nshots)
+        )
     }
 
     /// The hash-map scorer, kept as the reference the packed scorer's parity
@@ -289,8 +306,11 @@ impl<'a> Coverage<'a> {
     ) -> ((f64, f64), (f64, f64)) {
         let error_generators = self.get_generator_errors();
         let sample = crate::ler::sample_shots(&error_generators, nshots, seed);
+        let tables = self.pack_ler(&error_generators);
+        let counts = crate::ler::score_shots(&tables, &sample);
+        let accepted = counts.accepted + (sample.nshots - sample.nonempty) as u64;
         (
-            self.psr_ler_from_sample(&error_generators, &sample),
+            psr_and_ler(accepted, counts.logical, sample.nshots),
             self.approximate_psr_ler_reference(&sample),
         )
     }
@@ -324,7 +344,7 @@ fn record_readout(table: &mut CumulantTable, read_out: &[Pauli], nqbits: usize) 
 /// Counts are `u64`. The previous `i32` counters overflowed once a search asked
 /// for more than `2^31` shots, and the packed scorer counts in `u64` for that
 /// reason; narrowing here would put the overflow back.
-fn psr_and_ler(accepted: u64, accepted_logical: u64, nshots: usize) -> (f64, f64) {
+pub(crate) fn psr_and_ler(accepted: u64, accepted_logical: u64, nshots: usize) -> (f64, f64) {
     if accepted == 0 {
         return (0.0, 1.0);
     }

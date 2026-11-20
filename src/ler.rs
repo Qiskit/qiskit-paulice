@@ -79,7 +79,7 @@ const WORD: usize = 64;
 /// a batch sized to the exact deficit can only just reach the target. That
 /// equivalence is what `batched_draw_matches_the_rejection_loop_exactly`
 /// pins down, stream position included.
-fn sample_shot_positions(
+pub(crate) fn sample_shot_positions(
     stream: &mut GeneratorStream,
     table: &PoissonTable,
     nshots: usize,
@@ -104,6 +104,7 @@ fn sample_shot_positions(
 /// `indices[offsets[s]..offsets[s + 1]]` lists the generators that fired in
 /// shot `s`. The draw is per generator and the transpose to per shot is a
 /// counting pass, so no shot is ever written to concurrently.
+#[derive(Clone)]
 pub struct ShotSample {
     pub nshots: usize,
     pub offsets: Vec<u32>,
@@ -122,27 +123,42 @@ pub struct ShotSample {
 /// sample is therefore different on every call but still independent of how
 /// rayon splits the work, and there is one draw path to keep bit-exact.
 pub fn sample_shots(generators: &[NoiseGenerator], nshots: usize, seed: Option<u64>) -> ShotSample {
+    // One table per distinct lambda, shared by the generators in this call
+    // that have it. A uniform model is a handful of tables. A per-edge model
+    // is one per distinct rate.
+    let tables = PoissonTables::build(&rates_of(generators), nshots);
+    draw_shots(&tables, nshots, resolve_seed(seed))
+}
+
+fn rates_of(generators: &[NoiseGenerator]) -> Vec<f64> {
+    generators.iter().map(|(_, rate)| *rate).collect()
+}
+
+/// The base seed every generator's stream is keyed on.
+fn resolve_seed(seed: Option<u64>) -> u64 {
+    seed.unwrap_or_else(|| rand::rng().random::<u64>())
+}
+
+/// Draws every generator of `tables` from streams keyed on `base`.
+fn draw_shots(tables: &PoissonTables, nshots: usize, base: u64) -> ShotSample {
     assert!(
         nshots <= u32::MAX as usize,
         "shot positions are stored as u32"
     );
-    // One table per distinct lambda, shared by the generators in this call
-    // that have it. A uniform model is a handful of tables. A per-edge model
-    // is one per distinct rate.
-    let rates: Vec<f64> = generators.iter().map(|(_, rate)| *rate).collect();
-    let tables = PoissonTables::build(&rates, nshots);
-
-    let base = seed.unwrap_or_else(|| rand::rng().random::<u64>());
-
-    let fired: Vec<Vec<u32>> = generators
-        .par_iter()
-        .enumerate()
-        .map(|(index, _)| {
+    let fired: Vec<Vec<u32>> = (0..tables.num_generators())
+        .into_par_iter()
+        .map(|index| {
             let mut stream = GeneratorStream::new(base, index);
             sample_shot_positions(&mut stream, tables.for_generator(index), nshots)
         })
         .collect();
+    transpose_to_shots(&fired, nshots)
+}
 
+/// Turns per-generator shot lists into per-shot generator lists: a histogram,
+/// a prefix sum and a scatter. The scatter walks generators in ascending
+/// order, so within a shot the generators come out ascending.
+pub(crate) fn transpose_to_shots(fired: &[Vec<u32>], nshots: usize) -> ShotSample {
     let mut offsets = vec![0u32; nshots + 1];
     for shots in fired.iter() {
         for &shot in shots.iter() {
@@ -182,6 +198,7 @@ pub fn sample_shots(generators: &[NoiseGenerator], nshots: usize, seed: Option<u
 /// The planes are indexed over only the wires some generator touches, since no
 /// other wire can appear in an accumulated error.
 pub struct LerTables {
+    pub ngen: usize,
     pub wire_words: usize,
     pub post_words: usize,
     pub log_words: usize,
@@ -246,6 +263,7 @@ impl LerTables {
         }
 
         Self {
+            ngen: generators.len(),
             wire_words,
             post_words,
             log_words,
@@ -270,6 +288,130 @@ impl ShotCounts {
             logical: self.logical + other.logical,
         }
     }
+}
+
+/// One candidate's Monte Carlo work, prepared and not yet scored.
+///
+/// Preparation and scoring are separate so that a round of candidates can be
+/// prepared in parallel and then scored together by `score_batch`.
+pub struct LerJob {
+    pub tables: LerTables,
+    pub nshots: usize,
+    sample: Sample,
+}
+
+enum Sample {
+    Drawn(ShotSample),
+    Deferred(DeferredDraw),
+}
+
+/// What a draw left to the device needs, kept so that the host can make the
+/// same draw if the device declines.
+pub struct DeferredDraw {
+    pub poisson: PoissonTables,
+    pub rates: Vec<f64>,
+    /// Already resolved, so an unseeded job draws the same sample wherever it
+    /// is drawn.
+    pub seed: u64,
+}
+
+impl LerJob {
+    /// Draws the sample now, on the host.
+    pub fn prepare(
+        tables: LerTables,
+        generators: &[NoiseGenerator],
+        nshots: usize,
+        seed: Option<u64>,
+    ) -> Self {
+        let sample = sample_shots(generators, nshots, seed);
+        Self {
+            tables,
+            nshots,
+            sample: Sample::Drawn(sample),
+        }
+    }
+
+    /// Leaves the draw to the device if it would take the job, and otherwise
+    /// draws now as `prepare` does. Either way the sample is the one
+    /// `sample_shots` would draw.
+    pub fn prepare_deferred(
+        tables: LerTables,
+        generators: &[NoiseGenerator],
+        nshots: usize,
+        seed: Option<u64>,
+    ) -> Self {
+        let rates = rates_of(generators);
+        let poisson = PoissonTables::build(&rates, nshots);
+        let seed = resolve_seed(seed);
+        let sample = if crate::engine::ler_accepts_deferred(&tables, &poisson, &rates, nshots) {
+            Sample::Deferred(DeferredDraw {
+                poisson,
+                rates,
+                seed,
+            })
+        } else {
+            Sample::Drawn(draw_shots(&poisson, nshots, seed))
+        };
+        Self {
+            tables,
+            nshots,
+            sample,
+        }
+    }
+
+    pub fn deferred(&self) -> Option<&DeferredDraw> {
+        match &self.sample {
+            Sample::Deferred(draw) => Some(draw),
+            Sample::Drawn(_) => None,
+        }
+    }
+
+    fn host_sample(&self) -> std::borrow::Cow<'_, ShotSample> {
+        match &self.sample {
+            Sample::Drawn(sample) => std::borrow::Cow::Borrowed(sample),
+            Sample::Deferred(draw) => {
+                std::borrow::Cow::Owned(draw_shots(&draw.poisson, self.nshots, draw.seed))
+            }
+        }
+    }
+
+    fn score_on_host(&self) -> (ShotCounts, usize) {
+        let sample = self.host_sample();
+        (score_shots(&self.tables, &sample), sample.nonempty)
+    }
+
+    /// Turns the counts into `(post-selection acceptance, logical error rate)`.
+    ///
+    /// Shots in which nothing fired carry an identity error, which
+    /// post-selection accepts; they are counted here rather than scored. A
+    /// sample that accepts nothing ranks last, the same rule as
+    /// `coverage::psr_and_ler`.
+    pub fn finish(&self, counts: ShotCounts, nonempty: usize) -> (f64, f64) {
+        let accepted = counts.accepted + (self.nshots - nonempty) as u64;
+        crate::coverage::psr_and_ler(accepted, counts.logical, self.nshots)
+    }
+}
+
+/// Scores a round of jobs, returning each job's counts and non-empty shot
+/// count in input order. A job's result does not depend on which other jobs
+/// share the round, nor on whether it was scored on the device.
+pub fn score_batch(jobs: &[LerJob]) -> Vec<(ShotCounts, usize)> {
+    if jobs.iter().any(|job| job.deferred().is_some()) {
+        return score_batch_counting_device(jobs).0;
+    }
+    jobs.par_iter().map(LerJob::score_on_host).collect()
+}
+
+/// `score_batch`, also returning how many of the jobs the device scored.
+pub(crate) fn score_batch_counting_device(jobs: &[LerJob]) -> (Vec<(ShotCounts, usize)>, usize) {
+    let device = crate::engine::ler_counts_batch(jobs);
+    let on_device = device.iter().filter(|counted| counted.is_some()).count();
+    let results = jobs
+        .par_iter()
+        .zip(device)
+        .map(|(job, counted)| counted.unwrap_or_else(|| job.score_on_host()))
+        .collect();
+    (results, on_device)
 }
 
 /// Scores every non-empty shot.
@@ -706,6 +848,64 @@ mod tests {
                 assert_eq!(through_the_api.1.to_bits(), packed.1.to_bits());
             }
         }
+    }
+
+    /// A round scored together has to give each candidate exactly what it
+    /// gets scored alone. The candidates differ in width, and the test checks
+    /// that their results differ too, so a batch that returned one answer for
+    /// the whole round, or answers in the wrong order, would fail.
+    #[test]
+    fn a_round_scored_together_matches_one_at_a_time() {
+        use crate::coverage::Coverage;
+        use crate::noise_model::{Readout, UNoiseModel, UniformDepolarizing};
+        use rustiq_core::structures::{CliffordCircuit, CliffordGate};
+
+        let models = vec![
+            UNoiseModel::UniformDepolarizing(UniformDepolarizing::new(0.01)),
+            UNoiseModel::Readout(Readout::new(0.02)),
+        ];
+        let nshots = 4096;
+        let seed = Some(20260904);
+        let circuits: Vec<CliffordCircuit> = [4usize, 6, 9, 5]
+            .into_iter()
+            .map(|nqbits| {
+                let mut circuit = CliffordCircuit::new(nqbits);
+                for q in 0..nqbits - 1 {
+                    circuit.gates.push(CliffordGate::CZ(q, q + 1));
+                    circuit.gates.push(CliffordGate::H(q));
+                }
+                circuit
+            })
+            .collect();
+
+        let mut alone = Vec::new();
+        let mut jobs = Vec::new();
+        for circuit in &circuits {
+            let measured: Vec<usize> = (0..circuit.nqbits).collect();
+            let mut coverage = Coverage::new(circuit, &models);
+            coverage.set_check_cumulants(&[0], &[vec![]]);
+            coverage.set_logical_cumulants(&[], &measured);
+            alone.push(coverage.approximate_psr_ler(nshots, seed));
+            jobs.push(coverage.prepare_psr_ler(nshots, seed));
+        }
+        let together: Vec<(f64, f64)> = score_batch(&jobs)
+            .into_iter()
+            .zip(&jobs)
+            .map(|((counts, nonempty), job)| job.finish(counts, nonempty))
+            .collect();
+
+        assert_eq!(together.len(), alone.len());
+        for (i, (batched, single)) in together.iter().zip(&alone).enumerate() {
+            assert_eq!(
+                (batched.0.to_bits(), batched.1.to_bits()),
+                (single.0.to_bits(), single.1.to_bits()),
+                "candidate {i}: {batched:?} batched vs {single:?} alone"
+            );
+        }
+        assert!(
+            alone.iter().any(|r| r.1.to_bits() != alone[0].1.to_bits()),
+            "every candidate scored the same, so the test cannot tell the results apart"
+        );
     }
 
     #[test]

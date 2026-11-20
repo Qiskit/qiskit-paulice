@@ -27,6 +27,7 @@ dependencies = [
     "qiskit>=2.3, <3",
     "numpy>=1.26",
     "samplomatic>=0.20.0",
+    "coheriq>=0.1.1, <0.10",
 ]
 
 [tool.maturin]
