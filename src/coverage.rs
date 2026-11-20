@@ -330,4 +330,51 @@ mod psr_and_ler_tests {
         assert_eq!(psr, 1.0);
         assert_eq!(ler, 0.25);
     }
+
+    /// Every measured qubit's readout error counts toward gamma, whatever gates
+    /// end its line. Without checks nothing is post-selected, so readout-only
+    /// noise gives exactly one generator per measured qubit.
+    #[test]
+    fn readout_counts_on_qubits_ending_in_single_qubit_gates() {
+        use super::super::noise_model::{Readout, UNoiseModel};
+        use super::Coverage;
+        use rustiq_core::structures::{CliffordCircuit, CliffordGate};
+
+        let error_rate = 0.02;
+        let models = vec![UNoiseModel::Readout(Readout::new(error_rate))];
+        let trailing: [fn(usize) -> CliffordGate; 5] = [
+            CliffordGate::H,
+            CliffordGate::S,
+            CliffordGate::Sd,
+            CliffordGate::SqrtX,
+            CliffordGate::SqrtXd,
+        ];
+        // Qubit 3 has no 2-qubit gate, so its error sits on its input wire.
+        let nqbits = 4;
+        for first in trailing {
+            for second in trailing {
+                let mut circuit = CliffordCircuit::new(nqbits);
+                circuit.gates.push(CliffordGate::H(0));
+                circuit.gates.push(CliffordGate::CNOT(0, 1));
+                circuit.gates.push(CliffordGate::CZ(1, 2));
+                for q in [0, 2, 3] {
+                    circuit.gates.push(first(q));
+                    circuit.gates.push(second(q));
+                }
+                for nmeasured in 1..=nqbits {
+                    let measured: Vec<usize> = (0..nmeasured).collect();
+                    let mut coverage = Coverage::new(&circuit, &models);
+                    coverage.set_check_cumulants(&[], &[]);
+                    coverage.set_logical_cumulants(&[], &measured);
+                    let want = (1. - 2. * error_rate).powi(-(nmeasured as i32));
+                    let got = coverage.gamma_apx();
+                    assert!(
+                        ((got - want) / want).abs() < 1e-12,
+                        "{:?}: gamma {got}, expected {want}",
+                        circuit.gates
+                    );
+                }
+            }
+        }
+    }
 }

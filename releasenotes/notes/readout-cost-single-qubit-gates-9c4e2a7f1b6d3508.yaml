@@ -1,0 +1,9 @@
+---
+fixes:
+  - |
+    The cost that :func:`~qiskit_paulice.add_pauli_checks` minimizes ignored
+    ``readout_noise`` on every qubit whose last gate was a single-qubit gate, so such a
+    qubit's readout error neither raised the reported ``cost`` nor steered the search
+    toward checks that detect it. The readout error on every qubit is now counted,
+    whichever gates end its line. Costs of circuits that end in single-qubit gates rise
+    accordingly, and the checks picked for them can change.

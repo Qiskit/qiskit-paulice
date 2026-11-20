@@ -618,6 +618,10 @@ impl NoiseModelLike for Idling {
     }
 }
 
+/// A noise model that flips each qubit's measurement outcome with probability `error_rate`.
+/// It is one X generator per qubit just before the measurement, at rate
+/// `-ln(1 - 2 * error_rate) / 2`, which `utils::readout_terms` places on a wire the
+/// coverage tables record.
 #[derive(Clone, Debug)]
 pub struct Readout {
     error_rate: f64,
@@ -633,21 +637,23 @@ impl Readout {
         -1. / 2. * (1. - 2. * self.error_rate).ln()
     }
 
-    pub(crate) fn generators_for_last_wires(&self, last_wires: &[Wire]) -> Vec<NoiseGenerator> {
+    /// One generator per `(wire, pauli)` of `utils::readout_terms`.
+    pub(crate) fn generators_for_terms(&self, terms: &[(Wire, u8)]) -> Vec<NoiseGenerator> {
         let rate = self.rate();
-        let mut generators = Vec::with_capacity(last_wires.len());
-        for wire in last_wires {
+        let mut generators = Vec::with_capacity(terms.len());
+        for (wire, p) in terms {
             let mut pauli = SparsePauli::new();
-            pauli.update(wire.clone(), 1);
+            pauli.update(wire.clone(), *p);
             generators.push((pauli, rate));
         }
         generators
     }
 
-    pub(crate) fn emit_for_last_wires(&self, last_wires: &[Wire], sink: &mut dyn GeneratorSink) {
+    /// `generators_for_terms`, fed to `sink` in the same order.
+    pub(crate) fn emit_for_terms(&self, terms: &[(Wire, u8)], sink: &mut dyn GeneratorSink) {
         let rate = self.rate();
-        for wire in last_wires {
-            sink.push(&[(wire.clone(), 1)], rate);
+        for term in terms {
+            sink.push(std::slice::from_ref(term), rate);
         }
     }
 }
@@ -659,14 +665,14 @@ impl Default for Readout {
 }
 
 impl NoiseModelLike for Readout {
-    /// One single-wire generator on each qubit's last wire.
+    /// One single-wire generator per qubit, placed by `utils::readout_terms`.
     fn generator_hint(&self, circuit: &CliffordCircuit) -> (usize, usize) {
         (circuit.nqbits, circuit.nqbits)
     }
 
     fn get_generators(&self, circuit: &CliffordCircuit) -> (Vec<NoiseGenerator>, CliffordCircuit) {
-        let last = super::utils::last_wires(circuit);
-        (self.generators_for_last_wires(&last), circuit.clone())
+        let terms = super::utils::readout_terms(circuit);
+        (self.generators_for_terms(&terms), circuit.clone())
     }
 }
 /// A wrapper enum to simplify interfacing with Python.

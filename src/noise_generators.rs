@@ -14,7 +14,7 @@
 
 use super::noise_model::{NoiseGenerator, NoiseModelLike, UNoiseModel};
 use super::sparse_pauli::SparsePauli;
-use super::utils::last_wires;
+use super::utils::readout_terms;
 use super::wire::Wire;
 use rustiq_core::structures::CliffordCircuit;
 
@@ -70,8 +70,8 @@ impl GeneratorSink for SparseSink {
 /// Runs every noise model over the circuit, feeding `sink` in emission order.
 ///
 /// Each model may rewrite the circuit (`LayeredNoiseModel` relayers it), and
-/// later models see the rewritten version -- which is why `Readout` recomputes
-/// the last wires here rather than trusting the original circuit.
+/// later models see the rewritten version -- which is why `Readout` places its
+/// generators on the current circuit rather than trusting the original one.
 pub fn emit_generators(
     circuit: &CliffordCircuit,
     noise_models: &[UNoiseModel],
@@ -91,8 +91,8 @@ pub fn emit_generators(
             match noise_model {
                 UNoiseModel::Readout(m) => {
                     // Recompute on the *current* circuit: a prior model (e.g.
-                    // LayeredNoiseModel) may have rewritten gate indices / last wires.
-                    m.emit_for_last_wires(&last_wires(current), sink);
+                    // LayeredNoiseModel) may have rewritten gate indices.
+                    m.emit_for_terms(&readout_terms(current), sink);
                     None
                 }
                 _ => noise_model.emit_generators(current, sink),
