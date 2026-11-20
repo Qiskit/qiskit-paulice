@@ -343,12 +343,12 @@ mod gamma_conformance {
                 (
                     8usize,
                     40usize,
-                    [1.12903142202641, 1.3057315417834063, 1.2107729565967393],
+                    [1.3292941600027322, 1.4168093986365087, 1.3137727393627814],
                 ),
                 (
                     64,
                     200,
-                    [6.212243919666082, 14.094759142990492, 6.119021484303299],
+                    [33.122868853187725, 44.20415914103663, 28.86523665967344],
                 ),
             ] {
                 let measured: Vec<usize> = (0..nqubits).collect();
@@ -876,9 +876,9 @@ mod ler_conformance {
         fn host_ler_matches_its_golden_values() {
             let models = realistic_models();
             for (nqbits, check, nshots, golden) in [
-                (12usize, 0usize, 8192usize, (1174u64, 349u64, 1189usize)),
-                (32, 5, 20_000, (6909, 2128, 7027)),
-                (64, 23, 200_000, (115_866, 39_977, 117_108)),
+                (12usize, 0usize, 8192usize, (1099u64, 1070u64, 1189usize)),
+                (32, 5, 20_000, (6688, 6570, 7027)),
+                (64, 23, 200_000, (113_868, 112_306, 117_108)),
             ] {
                 let circuit = chain(nqbits);
                 let coverage = chain_coverage(&circuit, &models, check);
@@ -903,7 +903,7 @@ mod device {
     use crate::noise_model::UNoiseModel;
     use crate::poisson_table::{FlatTables, PoissonTables};
     use rayon::prelude::*;
-    use rustiq_core::structures::{CliffordCircuit, CliffordGate};
+    use rustiq_core::structures::CliffordGate;
     use std::sync::{Mutex, OnceLock};
 
     /// Matches `PAULICE_MAX_QUBITS`, the qubit indices `paulice_pack_gate`
@@ -942,7 +942,6 @@ mod device {
             pub logical_seed: *const u64,
             pub logical_row_offset: *const i32,
             pub row_words: i32,
-            pub readout_column: *const i32,
             pub blocks: *const NoiseBlock,
             pub n_blocks: i32,
             pub out_rates: *mut f64,
@@ -1254,39 +1253,6 @@ mod device {
             .collect()
     }
 
-    /// Column of each qubit's readout wire, or -1 when the wire is not recorded.
-    ///
-    /// Mirrors the host walk's column numbering: the backward walk visits
-    /// 2-qubit gates last-first, so the gate with ascending rank `r` owns
-    /// columns `2 * (n2q - 1 - r)` and the next one, and the input wires follow
-    /// all of them.
-    ///
-    /// `n2q` and `rank_of_gate` come from the caller's walk over the gates,
-    /// and `out` is this candidate's slice of the shared buffer.
-    fn readout_columns(
-        circuit: &CliffordCircuit,
-        n2q: usize,
-        rank_of_gate: &[i32],
-        out: &mut [i32],
-    ) {
-        let wires = crate::utils::last_wires(circuit);
-        debug_assert_eq!(out.len(), wires.len());
-        for (column, wire) in out.iter_mut().zip(wires.iter()) {
-            *column = match wire {
-                crate::wire::Wire::Input(q) => (2 * n2q + q) as i32,
-                crate::wire::Wire::GateWire(gate_index, slot) => {
-                    let rank = rank_of_gate[*gate_index];
-                    if rank < 0 {
-                        // A single-qubit gate's wire is never snapshotted.
-                        -1
-                    } else {
-                        2 * (n2q as i32 - 1 - rank) + *slot as i32
-                    }
-                }
-            };
-        }
-    }
-
     fn set_bit(mask: &mut [u64], bit: usize) {
         mask[bit / 64] |= 1u64 << (bit % 64);
     }
@@ -1378,7 +1344,6 @@ mod device {
         let mut n_two_qubit: Vec<i32> = vec![0; candidates.len()];
         let mut post_seed: Vec<u64> = vec![0; total_post_rows * row_words];
         let mut logical_seed: Vec<u64> = vec![0; candidates.len() * logical_stride];
-        let mut readout_column: Vec<i32> = vec![0; candidates.len() * nqubits];
 
         {
             let jobs: Vec<_> = candidates
@@ -1386,29 +1351,20 @@ mod device {
                 .zip(split_by(&mut gates, &gate_lens))
                 .zip(split_by(&mut post_seed, &post_lens))
                 .zip(logical_seed.chunks_mut(logical_stride))
-                .zip(readout_column.chunks_mut(nqubits))
                 .zip(n_two_qubit.iter_mut())
-                .map(|(((((c, g), p), l), r), n)| (c, g, p, l, r, n))
+                .map(|((((c, g), p), l), n)| (c, g, p, l, n))
                 .collect();
 
             jobs.into_par_iter().for_each(
-                |(candidate, gate_out, post_out, logical_out, readout_out, n2q_out)| {
+                |(candidate, gate_out, post_out, logical_out, n2q_out)| {
                     let circuit = candidate.circuit;
 
-                    // One walk yields the gate encoding, the 2-qubit count and
-                    // the 2-qubit ranks `readout_columns` needs.
-                    let mut rank_of_gate = vec![-1i32; circuit.gates.len()];
+                    // One walk yields the gate encoding and the 2-qubit count.
                     let mut n2q = 0i32;
-                    for ((gate, word), rank) in circuit
-                        .gates
-                        .iter()
-                        .zip(gate_out.iter_mut())
-                        .zip(rank_of_gate.iter_mut())
-                    {
+                    for (gate, word) in circuit.gates.iter().zip(gate_out.iter_mut()) {
                         let (op, q0, q1) = opcode(gate);
                         *word = (op << 24) | (q0 << 12) | q1;
                         if gate.arity() == 2 {
-                            *rank = n2q;
                             n2q += 1;
                         }
                     }
@@ -1435,8 +1391,6 @@ mod device {
                     {
                         set_bit(row, *qubit);
                     }
-
-                    readout_columns(circuit, n2q as usize, &rank_of_gate, readout_out);
                 },
             );
         }
@@ -1453,7 +1407,6 @@ mod device {
             logical_seed: logical_seed.as_ptr(),
             logical_row_offset: logical_row_offset.as_ptr(),
             row_words: row_words as i32,
-            readout_column: readout_column.as_ptr(),
             blocks: blocks.as_ptr(),
             n_blocks: blocks.len() as i32,
             out_rates: rates.as_mut_ptr(),

@@ -57,7 +57,6 @@ pub struct GammaBatch {
     logical_seed: *const u64,
     logical_row_offset: *const i32,
     row_words: i32,
-    readout_column: *const i32,
     blocks: *const NoiseBlock,
     n_blocks: i32,
     out_rates: *mut f64,
@@ -377,7 +376,6 @@ unsafe extern "C" fn gamma_batch(ctx: *mut Ctx, batch: *const GammaBatch) -> c_i
     let n_two_qubit = unsafe { slice(b.n_two_qubit, n) };
     let post_seed = unsafe { slice(b.post_seed, post_offset[n] as usize * row_words) };
     let logical_seed = unsafe { slice(b.logical_seed, logical_offset[n] as usize * row_words) };
-    let readout = unsafe { slice(b.readout_column, n * nqubits) };
     let blocks = unsafe { slice(b.blocks, b.n_blocks as usize) };
     let out = unsafe { slice_mut(b.out_rates, n) };
 
@@ -387,23 +385,16 @@ unsafe extern "C" fn gamma_batch(ctx: *mut Ctx, batch: *const GammaBatch) -> c_i
     for c in 0..n {
         let circuit = &gates[gate_offset[c] as usize..gate_offset[c + 1] as usize];
         let n2q = n_two_qubit[c] as usize;
-        let post = propagate(
-            circuit,
-            &rows(post_offset, post_seed, c),
-            row_words,
-            nqubits,
-        );
-        let logical = propagate(
-            circuit,
-            &rows(logical_offset, logical_seed, c),
-            row_words,
-            nqubits,
-        );
-        let readout = &readout[c * nqubits..(c + 1) * nqubits];
+        let post_seeds = rows(post_offset, post_seed, c);
+        let logical_seeds = rows(logical_offset, logical_seed, c);
+        let post = propagate(circuit, &post_seeds, row_words, nqubits);
+        let logical = propagate(circuit, &logical_seeds, row_words, nqubits);
+        // Whether some row of `seeds` is read out through qubit `q`.
+        let reads = |seeds: &[u64], q: usize| seeds.chunks_exact(row_words).any(|row| bit(row, q));
 
         let mut acc = 0.0f64;
         for (i, block) in blocks.iter().enumerate() {
-            let generators: Vec<Vec<(i32, u8)>> = if block.kind == NOISE_DEPOLARIZING {
+            let mut count = if block.kind == NOISE_DEPOLARIZING {
                 // 15 per 2-qubit gate in ascending gate order; pairs row-major
                 // over (p0, p1) without the identity. The walk visits the gates
                 // last first, so gate `rank` owns columns 2 * (n2q - 1 - rank).
@@ -421,14 +412,15 @@ unsafe extern "C" fn gamma_batch(ctx: *mut Ctx, batch: *const GammaBatch) -> c_i
                         }
                         terms
                     })
-                    .collect()
+                    .filter(|terms| !covered(&post, terms) && covered(&logical, terms))
+                    .count()
             } else {
-                readout.iter().map(|&col| vec![(col, 1u8)]).collect()
+                // One readout flip per qubit, which flips the rows read out
+                // through that qubit.
+                (0..nqubits)
+                    .filter(|&q| !reads(&post_seeds, q) && reads(&logical_seeds, q))
+                    .count()
             };
-            let mut count = generators
-                .iter()
-                .filter(|terms| !covered(&post, terms) && covered(&logical, terms))
-                .count();
             if i == 0 && faulty(Fault::GammaCount) {
                 count += 1;
             }

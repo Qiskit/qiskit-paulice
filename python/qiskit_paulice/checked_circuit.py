@@ -671,6 +671,9 @@ def _fault_channels(
             for (gate_index, slot), pauli in components:
                 channels[gate_index].append((len(rates) - 1, slot, pauli))
     suffix = Clifford.from_label("I" * num_qubits)
+    # Readout wires (index -2) sit at the end of the circuit, so nothing follows them.
+    for row, qubit, pauli in channels.get(-2, ()):
+        _xor_image(x_rows[row], z_rows[row], suffix, qubit, pauli)
     for gate_index in range(len(gates) - 1, -1, -1):
         name, qubits = gates[gate_index]
         for row, slot, pauli in channels.get(gate_index, ()):

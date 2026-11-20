@@ -40,17 +40,6 @@ pub fn get_wires(gate: &CliffordGate, gate_index: usize) -> Vec<Wire> {
         .collect()
 }
 
-/// Final wire on each qubit line after propagating through `circuit` once.
-pub fn last_wires(circuit: &CliffordCircuit) -> Vec<Wire> {
-    let mut out: Vec<Wire> = (0..circuit.nqbits).map(Wire::Input).collect();
-    for (gi, gate) in circuit.gates.iter().enumerate() {
-        let (qbits, arity) = gate_qbits(gate);
-        for (qi, q) in qbits[..arity].iter().enumerate() {
-            out[*q] = Wire::GateWire(gi, qi);
-        }
-    }
-    out
-}
 pub fn nullspace(matrix: &[Vec<bool>]) -> Vec<Vec<bool>> {
     let mut matrix = matrix.to_vec();
     let mut witness = vec![vec![false; matrix.len()]; matrix.len()];

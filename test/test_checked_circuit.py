@@ -712,13 +712,31 @@ class TestFaultChannels(unittest.TestCase):
         """Generators on input wires (index -1) propagate through the whole circuit."""
         circuit = QuantumCircuit(3)
         circuit.h(0)
-        circuit.cz(0, 1)  # qubit 2 has no gates, so its "last wire" is its input wire
+        circuit.cz(0, 1)
+
+        class _InputWireModel:
+            """An X on the input wire of qubit 0 and one on that of qubit 2."""
+
+            def resolve_generators(self, gates, _num_qubits):
+                return [([((-1, 0), 1)], 0.1), ([((-1, 2), 1)], 0.2)], gates
+
+        rates, x_img, z_img, _ = _fault_channels(circuit, _InputWireModel())
+        np.testing.assert_allclose(rates, [0.1, 0.2])
+        # H turns the X on qubit 0 into a Z, which CZ leaves alone; qubit 2 has no gates.
+        np.testing.assert_array_equal(x_img, [[False, False, False], [False, False, True]])
+        np.testing.assert_array_equal(z_img, [[True, False, False], [False, False, False]])
+
+    def test_readout_wire_generators(self):
+        """Readout generators sit on readout wires (index -2), at the end of the circuit."""
+        circuit = QuantumCircuit(3)
+        circuit.h(0)
+        circuit.cz(0, 1)
+        circuit.h(1)  # a trailing single-qubit gate does not move the readout error
         readout = 0.1
         rates, x_img, z_img, _ = _fault_channels(circuit, _RustNoiseModel.readout(readout))
         np.testing.assert_allclose(rates, -np.log(1 - 2 * readout) / 2)
-        # One X per qubit, each on a different qubit, and no Z anywhere.
-        self.assertEqual(x_img.sum(), 3)
-        self.assertTrue((x_img.sum(axis=0) == 1).all())
+        # One X per qubit, each on its own qubit, and no Z anywhere.
+        np.testing.assert_array_equal(x_img, np.eye(3, dtype=bool))
         self.assertFalse(z_img.any())
 
     def test_uniform_gate_noise_is_depolarizing(self):
