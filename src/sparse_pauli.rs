@@ -95,6 +95,10 @@ impl SparsePauli {
                     h = h.wrapping_mul(31).wrapping_add(*gi as u64 + 1);
                     h = h.wrapping_mul(31).wrapping_add(*qi as u64 + 1);
                 }
+                Wire::Readout(q) => {
+                    h = h.wrapping_mul(31).wrapping_add(3);
+                    h = h.wrapping_mul(31).wrapping_add(*q as u64 + 1);
+                }
             }
             h = h.wrapping_mul(31).wrapping_add(*p as u64);
         }

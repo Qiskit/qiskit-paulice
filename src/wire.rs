@@ -15,15 +15,21 @@ use std::cmp::{Ord, Ordering};
 
 /// Size of the dense wire-id range a circuit can produce. See `Wire::dense_id`.
 pub fn wire_id_space(circuit: &CliffordCircuit) -> usize {
-    circuit.nqbits + 2 * circuit.gates.len()
+    2 * circuit.nqbits + 2 * circuit.gates.len()
 }
 
 /// Struct representing a wire in a circuit
-/// A wire is either an input wire (indexed by qbit) or a gate wire (indexed by gate index and qbit)
+/// A wire is an input wire (indexed by qbit), a gate wire (indexed by gate index and qbit), or
+/// a readout wire (indexed by qbit).
+///
+/// A readout wire stands for the measurement of a qubit at the end of the circuit, in whatever
+/// basis that is. An operator read out through a qubit holds a Z on its readout wire and the
+/// readout error is an X there, so the error flips exactly the operators read out through it.
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
 pub enum Wire {
     Input(usize),
     GateWire(usize, usize),
+    Readout(usize),
 }
 
 impl PartialOrd for Wire {
@@ -34,26 +40,21 @@ impl PartialOrd for Wire {
 
 impl Ord for Wire {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        match (self, other) {
-            (Wire::Input(_), Wire::GateWire(_, _)) => Ordering::Less,
-            (Wire::GateWire(_, _), Wire::Input(_)) => Ordering::Greater,
-            (Wire::Input(q1), Wire::Input(q2)) => q1.cmp(q2),
-            (Wire::GateWire(g1, q1), Wire::GateWire(g2, q2)) => {
-                if let Ordering::Equal = g1.cmp(g2) {
-                    q1.cmp(q2)
-                } else {
-                    g1.cmp(g2)
-                }
-            }
-        }
+        // Circuit order: inputs, then gates, then readouts.
+        let key = |wire: &Wire| match wire {
+            Wire::Input(q) => (0, *q, 0),
+            Wire::GateWire(g, q) => (1, *g, *q),
+            Wire::Readout(q) => (2, *q, 0),
+        };
+        key(self).cmp(&key(other))
     }
 }
 
 impl Wire {
-    /// Returns the gate index of the wire or -1 if the wire is an input wire
+    /// Returns the gate index of the wire or -1 if the wire is not a gate wire
     pub fn gate_index(&self) -> i32 {
         match self {
-            Self::Input(_) => -1,
+            Self::Input(_) | Self::Readout(_) => -1,
             Self::GateWire(gi, _) => *gi as i32,
         }
     }
@@ -69,22 +70,24 @@ impl Wire {
     }
     /// Dense index of this wire inside a circuit of `nqbits` qubits.
     ///
-    /// Inputs take `[0, nqbits)`, and the (at most two) output wires of gate
-    /// `g` take `nqbits + 2g` and `nqbits + 2g + 1`. Packing wires into a
+    /// Inputs take `[0, nqbits)`, readouts `[nqbits, 2 * nqbits)`, and the (at
+    /// most two) output wires of gate `g` take `2 * nqbits + 2g` and
+    /// `2 * nqbits + 2g + 1`. Packing wires into a
     /// contiguous range lets the coverage tables index columns with an array
     /// lookup instead of hashing a `Wire`, which is what the inner loop of
     /// gamma scoring does for every generator term.
     pub fn dense_id(&self, nqbits: usize) -> usize {
         match self {
             Self::Input(q) => *q,
-            Self::GateWire(gi, qi) => nqbits + 2 * gi + qi,
+            Self::Readout(q) => nqbits + q,
+            Self::GateWire(gi, qi) => 2 * nqbits + 2 * gi + qi,
         }
     }
 
     /// Returns the global qbit index of the wire
     pub fn get_qbit(&self, circuit: &CliffordCircuit, offset: usize) -> usize {
         match self {
-            Self::Input(q) => *q,
+            Self::Input(q) | Self::Readout(q) => *q,
             Self::GateWire(gi, qi) => {
                 let gate = circuit.gates[*gi + offset];
                 match gate {
@@ -110,5 +113,27 @@ impl Wire {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every wire of a circuit has its own dense id, inside `wire_id_space`.
+    #[test]
+    fn dense_ids_are_distinct_and_in_range() {
+        let mut circuit = CliffordCircuit::new(3);
+        circuit.gates.push(CliffordGate::H(0));
+        circuit.gates.push(CliffordGate::CZ(0, 2));
+        let nqbits = circuit.nqbits;
+        let mut wires: Vec<Wire> = (0..nqbits).map(Wire::Input).collect();
+        wires.extend((0..nqbits).map(Wire::Readout));
+        for gate in 0..circuit.gates.len() {
+            wires.extend([Wire::GateWire(gate, 0), Wire::GateWire(gate, 1)]);
+        }
+        let mut ids: Vec<usize> = wires.iter().map(|w| w.dense_id(nqbits)).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, (0..wire_id_space(&circuit)).collect::<Vec<_>>());
     }
 }
